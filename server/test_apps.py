@@ -418,6 +418,7 @@ class Apps(unittest.TestCase):
         cat = {a['id']: a for a in self.req('GET', '/api/apps')[1]}
         self.assertTrue(cat['iconic']['icon'].startswith('data:image/svg+xml;base64,'))
         self.assertEqual(cat['iconic']['icon_png'], '/api/apps/iconic/icon.png')
+        self.assertEqual(len(cat['iconic']['commit']), 12)
         self.assertTrue(cat['clock' if 'clock' in cat else 'weather']['icon'].startswith('data:image/'))  # every app has one
         m['icon'] = 'missing.svg'
         self.assertEqual(self.req('PUT', '/api/apps/iconic', {'files': {'manifest.json': json.dumps(m)}})[0], 400)

@@ -533,7 +533,8 @@ class Handler(BaseHTTPRequestHandler):
                     m = st.repo.manifest(i) or {}
                     out.append({'id': i, 'name': m.get('name'), 'description': m.get('description'), 'size': m.get('size'),
                                 'permissions': m.get('permissions'), 'screens': st.screens_showing(i),
-                                'icon': icon_data_uri(st.repo, i, m), 'icon_png': f'/api/apps/{i}/icon.png'})
+                                'icon': icon_data_uri(st.repo, i, m), 'icon_png': f'/api/apps/{i}/icon.png',
+                                'commit': st.repo.head(i)[:12]})
                 return self.send(200, out)
             if parts[:2] == ['api', 'apps'] and len(parts) >= 3 and manifest.check_id(parts[2]):
                 a = parts[2]
