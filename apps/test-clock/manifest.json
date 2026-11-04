@@ -1,0 +1,1 @@
+{"id":"test-clock","name":"Test clock","description":"Big digital clock showing the current time","size":{"aspect":"16:10","preferred_px":[1920,1200],"distance_m":2},"permissions":{"fetch":[],"voice":false,"ask":false,"storage":false},"config":{}}

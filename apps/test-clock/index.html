@@ -1,0 +1,4 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Clock</title>
+<style>#t{font-size:12rem;font-weight:800;text-align:center;font-variant-numeric:tabular-nums;line-height:1}#d{font-size:1.6rem;text-align:center;color:var(--pp-muted);margin-top:1rem}</style></head><body class="pp-center"><div><div id="t" class="pp-huge">--:--</div><div id="d"></div></div>
+<script>function tick(){var n=new Date(),p=function(x){return String(x).padStart(2,'0')};document.getElementById('t').textContent=p(n.getHours())+':'+p(n.getMinutes())+':'+p(n.getSeconds());document.getElementById('d').textContent=n.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'});}
+tick();pinpin.ready.then(function(){tick();setInterval(tick,500);});</script></body></html>
