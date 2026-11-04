@@ -49,6 +49,16 @@ def campaign_progress(activity):
     return {'started': last.split(' ', 1)[0], 'what': last.split(' START ', 1)[-1][:200], 'runs_done': runs, 'finished': done}
 
 
+def flags():
+    """room_lab/flags.json as a list (the user guide's flag table is generated from it)."""
+    try:
+        d = json.loads(read(os.path.join(QWS, 'room_lab/flags.json')) or '{}')
+    except ValueError:
+        return []
+    items = d.get('flags', []) if isinstance(d, dict) else d
+    return [{k: f.get(k) for k in ('name', 'where', 'state', 'default', 'category', 'reason', 'menu')} for f in items if isinstance(f, dict)]
+
+
 def main():
     activity = read(os.path.join(QWS, 'bench/activity.log')).splitlines()
     head = subprocess.run(['git', '-C', QWS, 'log', '-1', '--format=%h %cI %s'], capture_output=True, text=True).stdout.strip()
@@ -60,6 +70,7 @@ def main():
         'activity': activity[-20:],
         'owner': read(os.path.join(QWS, 'bench/headset_owner')).strip(),
         'qws_head': head,
+        'flags': flags(),
     }
     json.dump(doc, sys.stdout, ensure_ascii=False)
 

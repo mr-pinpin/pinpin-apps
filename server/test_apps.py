@@ -551,6 +551,7 @@ class Apps(unittest.TestCase):
         self.assertEqual(d['vps']['roadmap'], '## Morning list\n- [ ] a'); self.assertIn('age_s', d['vps'])
         self.assertIn('recipes', d['apps']); self.assertIsInstance(d['screens'], list)
         self.assertIn('<title>', self.req('GET', '/status')[1])
+        self.assertIn('All the switches', self.req('GET', '/help')[1])
         # the floor plan is relayed from the house server (the stand-in has none: an error, not a crash)
         self.assertIn(self.req('GET', '/house-plan.svg')[0], (200, 404, 502))
 

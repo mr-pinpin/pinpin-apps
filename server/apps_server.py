@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """pinpin-apps server (Mini, port 57830): serves the mini-apps to the wall screens and lets the assistant evolve them.
 
+  GET  /help                        the user guide (ui/help.html; its switch table comes from room_lab/flags.json)
   GET  /status                      the morning status page (ui/status.html): roadmap, headset, benchmarks, activity,
                                     house plan, screens;  GET /api/status its data;  GET /house-plan.svg the floor plan
   GET  /                            the control page (ui/index.html): app gallery, screens and their apps
@@ -295,8 +296,17 @@ class Headset:
                         'latency_ms': (st.get('video') or {}).get('latencyMs'),
                         'anchors': '{located}/{stored}'.format(**st['anchors']) if isinstance(st.get('anchors'), dict) else None,
                         'errors': (st.get('errors') or [])[-3:]})
-            flags = {k.upper(): bool(v.get('on')) for k, v in st.items() if isinstance(v, dict) and 'on' in v}
-            out['flags_on'] = sorted(k for k, v in flags.items() if v)
+            # the live switches: settings.json toggles (SAVESET), overridden by files/<flag>-on markers installers drop
+            try:
+                toggles = {k.upper(): bool(v) for k, v in (json.loads(self.sh(f'run-as {self.PKG} cat files/settings.json') or '{}')
+                                                           .get('toggles') or {}).items()}
+            except ValueError:
+                toggles = {}
+            for f in self.sh(f'run-as {self.PKG} ls files').split():
+                if f.endswith('-on'):
+                    toggles[f[:-3].upper()] = True
+            out['toggles'] = toggles
+            out['flags_on'] = sorted(k for k, v in toggles.items() if v)
             out['state'] = {'MOUNTED': 'worn', 'STANDBY': 'standby', 'ASLEEP': 'asleep'}.get(out['vr'], (out['vr'] or '?').lower())
         except Exception as e:
             out['state'] = f'error: {str(e)[:120]}'
@@ -681,6 +691,8 @@ class Handler(BaseHTTPRequestHandler):
                                        'assistant': st.assistant.name, 'house_rev': (st.house.doc or {}).get('rev')})
             if u.path in ('/', '/index.html'):
                 return self.file(os.path.join(st.repo.root, 'ui', 'index.html'))
+            if u.path in ('/help', '/help/'):
+                return self.file(os.path.join(st.repo.root, 'ui', 'help.html'))
             if u.path in ('/status', '/status/'):
                 return self.file(os.path.join(st.repo.root, 'ui', 'status.html'))
             if u.path == '/api/status':

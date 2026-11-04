@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PinPin guide</title>
+<style>
+  :root { --bg: #0d1117; --card: #161c26; --line: #2a3342; --fg: #f4f6fa; --muted: #9aa6b8; --accent: #ffb84d; --good: #5fd38d; --bad: #ff6b6b; --cool: #6cb6ff; }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 860px; padding: 16px; background: var(--bg); color: var(--fg); font: 18px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  h1 { font-size: 30px; margin: 6px 0 4px; } h2 { font-size: 22px; margin: 0 0 6px; }
+  .sub { color: var(--muted); font-size: 15px; }
+  nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 6px; }
+  nav a { background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 5px 12px; font-size: 15px; color: var(--fg); text-decoration: none; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; margin: 14px 0; scroll-margin-top: 10px; }
+  section p { margin: 6px 0; }
+  .how { margin: 8px 0 0; padding-left: 22px; } .how li { margin: 4px 0; }
+  .tag { display: inline-block; font-size: 13px; font-weight: 700; border-radius: 6px; padding: 1px 8px; margin: 0 6px 4px 0; vertical-align: middle; }
+  .flag { background: #2a3342; color: var(--fg); font-family: ui-monospace, Menlo, monospace; }
+  .on { background: #1f4d33; color: var(--good); } .off { background: #4d1f1f; color: var(--bad); } .exp { background: #4d3a12; color: var(--accent); }
+  b.k { color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; } td, th { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; } td.n { font-family: ui-monospace, Menlo, monospace; white-space: nowrap; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<h1>How to use PinPin</h1>
+<div class="sub">Everything in the headset and around it, in plain words. Switches are named in <span class="tag flag">CAPS</span>: they live on the wrist panel or under the shoulder button → SETTINGS, each with a one-line explanation. <a href="/status">Status page</a> · <a href="/">Apps</a></div>
+<nav id="toc"></nav>
+
+<section id="point"><h2>Pointing and clicking</h2>
+<p>Your right hand is the mouse. A ring on the screen shows where you point.</p>
+<ul class="how">
+  <li><b class="k">Aim:</b> point with your hand; the aim comes from your knuckles, so clicking never moves it.</li>
+  <li><b class="k">Click:</b> the "finger gun": lower your thumb onto the side of your middle finger. A pinch also works. The ring tightens and turns gold as you close; every press is one single click at the spot you started.</li>
+</ul></section>
+
+<section id="screens"><h2>Screens: create, move, resize, close</h2>
+<p>The main screen shows the Mini or the laptop. Extra screens are real Mac displays from the laptop, streamed to your walls.</p>
+<ul class="how">
+  <li><b class="k">Create:</b> with your right index finger, draw a big circle in the air <b>clockwise</b>. A screen appears on the wall behind the circle, sized to it. Draw <b>counter-clockwise</b> over a screen to dismiss it (or to cancel a move). <span class="tag flag">SPELL</span></li>
+  <li><b class="k">Move:</b> hold the bar under any screen for half a second, point at a wall, and let go. Every screen has the bar, dimmer while locked. <span class="tag flag">ALLBARS</span></li>
+  <li><b class="k">Resize:</b> shoulder button → SCREENS → pick the screen → BIGGER / SMALLER; or grab a corner, or use both hands.</li>
+  <li><b class="k">Close:</b> SETTINGS → turn <span class="tag flag">LOCK</span> off, then pinch the <b>X</b> in the screen's corner <b>twice within 3 seconds</b>. <span class="tag flag">CLOSEX</span></li>
+  <li><b class="k">Lock:</b> LOCK hides the corners and the X so nothing moves by accident.</li>
+  <li><b class="k">Source:</b> the MINI and LAPTOP buttons switch what the main screen shows; it reopens the last one at start. <span class="tag flag">RESUME</span></li>
+</ul>
+<p class="sub">Screens never disappear after a restart: if the room isn't recognised yet, each stays at its last spot until the walls come back.</p></section>
+
+<section id="shoulder"><h2>The shoulder menu <span class="tag exp">experimental</span></h2>
+<p>A small round button rides by your shoulder, wherever you look. <span class="tag flag">SHOULDER</span></p>
+<ul class="how">
+  <li>Pinch it (point and pinch) or poke it: the menu opens about 1 m in front of you.</li>
+  <li>Each submenu opens about 1 m further out, so the ones behind stay visible as breadcrumbs. BACK goes up one level; the shoulder button closes everything.</li>
+  <li>Inside: <b>SCREENS</b> (each screen: bigger, smaller, move, delete, APP…), <b>WALLS</b> (drawing), <b>SCAN</b>, <b>SETTINGS</b> (every switch, with its explanation).</li>
+</ul></section>
+
+<section id="wrist"><h2>Settings on the wrist, and the wrist ring</h2>
+<ul class="how">
+  <li><b class="k">Settings panel:</b> turn the <b>back</b> of your left wrist toward your face and hold ("check your watch"); a ring fills and the panel opens. Palm toward your face is Meta's own menu, so it's left alone.</li>
+  <li><b class="k">Wrist ring</b> <span class="tag exp">experimental</span> <span class="tag flag">WRIST</span>: instead of holding, a small button appears 3 cm off your wrist; poke or pinch it and a ring of round buttons opens. The centre tells you what the button you point at does. SETTINGS in the ring reaches every switch. It shares its menus with the shoulder button.</li>
+</ul></section>
+
+<section id="claude"><h2>Claude on a screen</h2>
+<p>Every screen has its own Claude, which can see and use that screen ("open YouTube and search for…"). <span class="tag flag">ASSIST</span></p>
+<ul class="how">
+  <li>Pinch the terracotta button at the screen's top-right corner. A chat opens beside the screen and says hi.</li>
+  <li>Talk, then pause: after about 3½ seconds of quiet it sends what you said. Claude answers in the chat and listens again.</li>
+  <li>Pinch the button again to close the chat. Reopening shows the earlier conversation.</li>
+  <li>Only one screen listens at a time; after a minute of silence the mic stops (the chat stays).</li>
+</ul></section>
+
+<section id="dictation"><h2>Dictation (typing by voice)</h2>
+<ul class="how">
+  <li><b class="k">Talk:</b> raise a fist above your chest and hold; speak. Open your hand to finish. The words are typed where the cursor is on the screen.</li>
+  <li><b class="k">Send:</b> finish with a "throw": push your arm forward and open your hand, and it presses Enter after the last words.</li>
+  <li><b class="k">Undo:</b> within 15 seconds, sweep an open hand to the left to erase the last sentence (one per sweep).</li>
+</ul></section>
+
+<section id="scroll"><h2>Scrolling with a wave <span class="tag exp">experimental</span></h2>
+<p><span class="tag flag">SCROLL</span> Point at a screen, open your hand flat with the palm facing away from you, and move it up, down, left or right: the page follows your hand.</p></section>
+
+<section id="scan"><h2>Scanning a room, and seeing the geometry <span class="tag exp">experimental</span></h2>
+<ul class="how">
+  <li><b class="k">Scan:</b> shoulder button → SCAN, then look around slowly. Walls fill in as calm flat panels (furniture as a mesh). Press DONE. <span class="tag flag">SCAN</span></li>
+  <li>Scanned walls can hold screens, even in rooms Meta's Space Setup never covered, and they are saved in the house file.</li>
+  <li><b class="k">Geometry:</b> shows the room as a glowing wire mesh built from the depth sensor; it's also the progress cue while scanning. <span class="tag flag">GEOMETRY</span></li>
+</ul></section>
+
+<section id="walls"><h2>Drawing on walls <span class="tag exp">experimental</span></h2>
+<p><span class="tag flag">WALLTOOL</span> Shoulder button → WALLS:</p>
+<ul class="how">
+  <li><b>LINE:</b> pinch point A on a wall, then point B (a dashed preview follows), then CONFIRM.</li>
+  <li><b>EXPAND:</b> pulls the line out of the wall into a surface.</li>
+  <li><b>CIRCLE:</b> works the same way: centre, then size, then CONFIRM.</li>
+  <li>Shapes are saved in the house file and come back next time.</li>
+</ul></section>
+
+<section id="apps"><h2>Apps on the screens</h2>
+<p>Small apps that live on a screen: weather, a clock with sunrise and sunset, kitchen recipes from the ingredients you say, a shopping list, a notes board, a kitchen timer. Claude can make new ones for you.</p>
+<ul class="how">
+  <li><b class="k">Put an app on a screen:</b> shoulder button → SCREENS → SCREEN n → <b>APP…</b>, then pick one (NONE clears it). Only extra screens can hold apps.</li>
+  <li><b class="k">From your phone or laptop:</b> the <a href="/">apps page</a> lists every screen with a menu to pick its app, and shows every app with a live picture.</li>
+  <li><b class="k">Talk to an app:</b> each app shows what you can say at the bottom ("add milk", "recipe 2", "weather in Paris"). An app-mic button next to the Claude button is coming.</li>
+  <li><b class="k">Make a new one:</b> ask Claude on that screen ("make this screen a kitchen timer"), or type it into <b>Ask Claude</b> on the <a href="/">apps page</a>. Every change is saved in git, so nothing is ever lost.</li>
+  <li>Claude's web pages (YouTube and so on) open in the same kind of window, so you can click and scroll them normally.</li>
+</ul></section>
+
+<section id="misaligned"><h2>"Room looks misaligned: turn on the lights and look around"</h2>
+<p>The headset checks every 2 seconds whether the main screen still sits on the real wall. If it is more than 20 cm off for 20 seconds, you see this hint. Turn on the lights and look around the room for a moment: the headset finds its place again and the screens settle back. In the dark it can't see the walls well. <span class="tag flag">RELOCCHECK</span></p></section>
+
+<section id="flags"><h2>All the switches</h2>
+<p class="sub">Generated from the headset code's flag list (room_lab/flags.json), so it is always current. "Now" is what your headset has right now.</p>
+<div id="flagtable" class="sub">Loading…</div></section>
+
+<script>
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+document.getElementById('toc').innerHTML = [...document.querySelectorAll('section')].map((s) =>
+  `<a href="#${s.id}">${esc(s.querySelector('h2').childNodes[0].textContent.trim())}</a>`).join('');
+const CAT = { 'visual-taste': 'your choice', perf: 'speed (decided by benchmarks)', experimental: 'experimental' };
+fetch('/api/status', { cache: 'no-store' }).then((r) => r.json()).then((d) => {
+  const flags = ((d.vps && d.vps.flags) || []).filter((f) => f.where === 'headset' && f.state !== 'hidden');
+  const live = (d.headset && d.headset.toggles) || {};
+  // flags named in the sections above get their default state shown next to them
+  document.querySelectorAll('.tag.flag').forEach((t) => {
+    const f = flags.find((x) => x.name === t.textContent.trim());
+    if (f && !t.dataset.done) { t.dataset.done = 1; t.insertAdjacentHTML('afterend', ` <span class="tag ${(live[f.name] ?? f.state === 'on') ? 'on' : 'off'}">${(live[f.name] ?? f.state === 'on') ? 'on' : 'off'}</span>`); }
+  });
+  if (!flags.length) { document.getElementById('flagtable').textContent = 'The flag list has not arrived from the agents yet.'; return; }
+  const order = { experimental: 0, 'visual-taste': 1, perf: 2 };
+  flags.sort((a, b) => (order[a.category] ?? 3) - (order[b.category] ?? 3) || a.name.localeCompare(b.name));
+  document.getElementById('flagtable').innerHTML = '<table><tr><th>Switch</th><th>Now</th><th>Default</th><th>What it does</th></tr>' + flags.map((f) => {
+    const now = live[f.name];
+    return `<tr><td class="n">${esc(f.name)}<div class="sub">${esc(f.menu || '')}</div></td>
+      <td>${now === undefined ? '<span class="sub">?</span>' : `<span class="tag ${now ? 'on' : 'off'}">${now ? 'on' : 'off'}</span>`}</td>
+      <td><span class="tag ${f.state === 'on' ? 'on' : 'off'}">${esc(f.state)}</span></td>
+      <td>${f.category === 'experimental' ? '<span class="tag exp">experimental</span>' : `<span class="sub">${esc(CAT[f.category] || f.category)}</span>`}<div>${esc(f.reason)}</div></td></tr>`;
+  }).join('') + '</table>';
+}).catch(() => { document.getElementById('flagtable').textContent = 'The Mini is not answering.'; });
+</script>
+</body>
+</html>
