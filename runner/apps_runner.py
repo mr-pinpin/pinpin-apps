@@ -168,6 +168,39 @@ def chrome_args(mini, screen, target, box, mode='app'):
 # ---- input over CDP: synthetic CGEvent clicks never reach Chrome --app windows (2026-11-04, work-42), so the headset's
 # pinch-clicks and the assistant's clicks come here (the Mini forwards /api/screens/<id>/{click,move,scroll,type,key})
 
+# POST /input/<screen>/video {state}: the focus policy's lever (work-42's controller). Idempotent, and it only resumes
+# what it paused itself (a video the user paused stays paused). Videos in the page and its same-origin frames.
+#   probe  report only        pause  pause playing videos      play  resume the ones we paused
+#   low    YouTube player at its lowest quality (less decode; the page has no real fps cap)    full  undo low
+VIDEO_STATES = ('probe', 'pause', 'play', 'low', 'full')
+VIDEO_JS = r"""(function (st) {
+  const vids = [...document.querySelectorAll('video')];
+  let skipped = 0;
+  for (const f of document.querySelectorAll('iframe')) {
+    try { vids.push(...f.contentDocument.querySelectorAll('video')); } catch (e) { skipped++; }
+  }
+  for (const v of vids) {
+    if (st === 'pause' && !v.paused) { v.dataset.ppPaused = '1'; v.pause(); }
+    if (st === 'play' && v.dataset.ppPaused) { delete v.dataset.ppPaused; v.play().catch(() => {}); }
+  }
+  const mp = document.getElementById('movie_player');
+  let quality = null;
+  if (mp && mp.getPlaybackQuality) {
+    if (st === 'low' && mp.setPlaybackQualityRange) {
+      if (window.__ppQuality === undefined) window.__ppQuality = mp.getPlaybackQuality();
+      mp.setPlaybackQualityRange('tiny', 'tiny');
+    }
+    if (st === 'full' && window.__ppQuality !== undefined && mp.setPlaybackQualityRange) {
+      const q = window.__ppQuality; delete window.__ppQuality;
+      mp.setPlaybackQualityRange(q && q !== 'unknown' ? q : 'auto', q && q !== 'unknown' ? q : 'auto');
+    }
+    quality = { now: mp.getPlaybackQuality(), lowered: window.__ppQuality !== undefined };
+  }
+  return { state: st, url: location.host, youtube: quality, frames_skipped: skipped,
+    videos: vids.map((v) => ({ playing: !v.paused && !v.ended && v.readyState > 2, paused: v.paused,
+      muted: v.muted || v.volume === 0, paused_by_us: !!v.dataset.ppPaused, w: v.videoWidth, h: v.videoHeight })) };
+})"""
+
 MODS = {'alt': 1, 'option': 1, 'ctrl': 2, 'control': 2, 'cmd': 4, 'meta': 4, 'command': 4, 'shift': 8}
 KEYS = {  # key -> (code, windowsVirtualKeyCode, text typed on keyDown)
     'enter': ('Enter', 13, '\r'), 'return': ('Enter', 13, '\r'), 'tab': ('Tab', 9, '\t'), 'escape': ('Escape', 27, ''),
@@ -313,6 +346,17 @@ class Input:
             if len(json.dumps(v, default=str)) > 65536:
                 raise ValueError('result over 64 KB: return less')
             return {'ok': True, 'value': v}
+        if kind == 'video':
+            st = d.get('state', 'probe')
+            if st not in VIDEO_STATES:
+                raise ValueError('state: ' + ', '.join(VIDEO_STATES))
+            # userGesture: a resumed video with sound is not refused by Chrome's autoplay policy
+            r = self.call(s, 'Runtime.evaluate', {'expression': f'{VIDEO_JS}({json.dumps(st)})', 'returnByValue': True,
+                                                  'userGesture': True, 'timeout': 5000})
+            if r.get('exceptionDetails'):
+                ex = r['exceptionDetails']
+                return {'ok': False, 'error': ((ex.get('exception') or {}).get('description') or ex.get('text') or 'exception')[:500]}
+            return {'ok': True, **((r.get('result') or {}).get('value') or {})}
         raise ValueError(f'unknown input {kind}')
 
 

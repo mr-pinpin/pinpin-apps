@@ -67,5 +67,26 @@ class Point(unittest.TestCase):
         self.assertEqual(inp.point(47, 10000, 10000, 'viewport'), (1920, 1147))
 
 
+
+class Video(unittest.TestCase):
+    def test_video_lever(self):
+        class Proc:
+            def poll(self): return None
+        class Fake:
+            procs = {47: (Proc(),)}; display_box = {}
+        inp, sent = r.Input(Fake()), []
+        def call(s, m, p=None):
+            sent.append(p)
+            return {'result': {'value': {'state': 'pause', 'videos': [{'playing': False, 'paused_by_us': True}]}}}
+        inp.call = call
+        out = inp.do(47, 'video', {'state': 'pause'})
+        self.assertTrue(out['ok']); self.assertTrue(out['videos'][0]['paused_by_us'])
+        self.assertTrue(sent[0]['expression'].endswith('("pause")')); self.assertTrue(sent[0]['userGesture'])
+        self.assertTrue(inp.do(47, 'video', {})['ok'])  # probe by default
+        with self.assertRaises(ValueError):
+            inp.do(47, 'video', {'state': 'stop'})
+        with self.assertRaises(LookupError):
+            inp.do(48, 'video', {'state': 'pause'})
+
 if __name__ == '__main__':
     unittest.main(verbosity=1)
