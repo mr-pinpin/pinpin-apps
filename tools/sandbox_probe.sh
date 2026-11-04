@@ -5,8 +5,10 @@
 # BLOCKED. It renders in the same sandbox as a real screen (host page + iframe) but with the network open
 # (--no-sandbox-net), so only the app sandbox itself stops it.
 cd ~/pinpin-apps || exit 1
+# (render_check's own exit code counts the probes' refused requests and CSP reports as errors: expected here, so the
+# verdict is the page's "ALL BLOCKED" line alone)
 out=$(timeout 120 python3 tools/render_check.py http://127.0.0.1:57830/app/zz-probe/ --wait 25 --no-sandbox-net --expect "ALL BLOCKED")
-rc=$?
 echo "$out" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['text'])"
+echo "$out" | python3 -c "import json,sys; sys.exit(1 if json.load(sys.stdin)['missing'] else 0)"; rc=$?
 [ $rc = 0 ] && echo "SANDBOX PROBE PASS" || echo "SANDBOX PROBE FAIL"
 exit $rc
