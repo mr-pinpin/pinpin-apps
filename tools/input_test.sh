@@ -46,13 +46,13 @@ sleep 2; post scroll '{"u": 5000, "v": 5000, "dy": 900}' >/dev/null; sleep 1
 y=$(href | awk '{print $2}'); echo "scrollY after dy=900: $y"; [ "${y%.*}" -gt 300 ] || exit 1
 echo "PASS scroll"
 # type + key: focus the search box by clicking it in viewport units, type, Enter
-open_url https://html.duckduckgo.com/html/ duckduckgo || exit 1
+open_url "https://en.wikipedia.org/wiki/Special:Search" Special:Search || exit 1
 sleep 2
-V=$($A "$ON_AIR 'import apps_runner as r, json; c=r.CDP(r.cdp_port($ID)); print(json.dumps(c.call(\"Runtime.evaluate\", {\"expression\": \"var b=document.querySelector(\\\"input[name=q]\\\").getBoundingClientRect(); [Math.round((b.left+b.width/2)/innerWidth*10000), Math.round((b.top+b.height/2)/innerHeight*10000)]\", \"returnByValue\": True})[\"result\"][\"value\"]))'")
+V=$($A "$ON_AIR 'import apps_runner as r, json; c=r.CDP(r.cdp_port($ID)); print(json.dumps(c.call(\"Runtime.evaluate\", {\"expression\": \"var b=document.querySelector(\\\"input[name=search]\\\").getBoundingClientRect(); [Math.round((b.left+b.width/2)/innerWidth*10000), Math.round((b.top+b.height/2)/innerHeight*10000)]\", \"returnByValue\": True})[\"result\"][\"value\"]))'")
 set -- $(echo "$V" | tr -d '[],'); echo "search box viewport u,v $1,$2"
 echo "click: $(post click "{\"u\": $1, \"v\": $2, \"space\": \"viewport\"}")"
 post type '{"text": "pinpin wall screens"}' >/dev/null
 post key '{"combo": "Enter"}' >/dev/null
-wait_href "q=pinpin" || exit 1
+wait_href "search=pinpin" || exit 1
 echo "PASS type + Enter"
 result=pass
