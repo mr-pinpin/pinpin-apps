@@ -880,6 +880,8 @@ class Handler(BaseHTTPRequestHandler):
                 with urllib.request.urlopen(req, timeout=240) as r:
                     return self.send(r.status, body=r.read())
             except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    return self.send(502, {'error': 'the assistant does not build apps yet (no /api/build there)'})
                 return self.send(e.code, body=e.read())
             except Exception as e:
                 return self.send(502, {'error': f'assistant: {e}'})
