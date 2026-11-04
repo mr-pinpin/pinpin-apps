@@ -23,6 +23,7 @@ commit in this repo.
 | `server/apps_server.py` | runs on the Mini: serves apps to screens, the create/update API, the house mapping, events, the proxy and ask. |
 | `server/manifest.py` | validation of app folders and manifests. |
 | `runner/apps_runner.py` | runs on the laptop: one chromeless Chrome window per app screen, on that screen's virtual display. |
+| `docs/AUTHORING.md`, `docs/HEADSET.md` | how the assistant writes an app; the headset's picker protocol |
 | `deploy/` | install scripts and LaunchAgents for the Mini and the laptop. |
 | `tools/sync.sh` | syncs the VPS checkout ↔ the Mini repo (where the assistant's commits land) ↔ GitHub. |
 | `tools/render_check.py` | headless Chrome over the DevTools protocol, on the Mini: JS errors, visible text, screenshot, and scripted voice (`--say`). |
@@ -118,5 +119,7 @@ never committed.
 - [x] M5b: `POST /api/screens/<id>/open {url}` for the assistant's open_url (one runner for apps and web pages, navigated over CDP)
 - [x] M6: /api/ask forwarded to work-42's assistant (now the Air instance, 192.168.0.102:57840; the Mini instance when it's up). Recipes answered by Claude in 15–30 s, with built-in ideas shown at once
 - [ ] M7: headset dictation to an app screen (`/say`): work-c4 is adding an app-mic button beside the Claude button (ASSIST flag)
+- [x] M10: catalog for the headset's app picker: icons (SVG data URI, plus a PNG rendered on the Mini), commit per app; protocol in docs/HEADSET.md (sent to work-c4)
+- [x] M11: more starter apps: shopping list, clock (sunrise/sunset), notes board. Each passed the render check with scripted voice
 - [ ] M9: an app on a real screen: waits for the user to say which screen is the kitchen one
 - [ ] M8: the assistant creates a new app end to end ("make me a timer app") and it appears on a screen. Rehearsed through the API: `apps/timer` was made from docs/AUTHORING.md with `check: true`, rendered with no errors, and its voice worked
