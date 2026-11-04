@@ -112,12 +112,16 @@ def overnight():
 AIR_NET = r"""
 echo "ip=$(ipconfig getifaddr en0)"
 system_profiler SPAirPortDataType 2>/dev/null | awk '/Current Network Information:/{getline; sub(/^ */, ""); sub(/:$/, ""); print "ssid=" $0; exit}'
+cs() { ps -o time= -p "$(pgrep -x colorsyncd),$(pgrep -f colorsync.displayservices | head -1)" 2>/dev/null | awk -F'[:.]' '{ s += (NF==4 ? $1*3600+$2*60+$3+$4/100 : $1*60+$2+$3/100) } END { print s }'; }
+c0=$(cs); (log stream --style compact --predicate 'process BEGINSWITH "colorsync" AND eventMessage CONTAINS "XPC_DISPLAY_INFO_REQUEST"' > /tmp/pp-cs.log 2>/dev/null & echo $! > /tmp/pp-cs.pid); sleep 10; kill "$(cat /tmp/pp-cs.pid)" 2>/dev/null; c1=$(cs)
+echo "cs={\"cpu\": $(echo "$c0 $c1" | awk '{printf "%.0f", ($2-$1)*10}'), \"req_per_min\": $(( $(grep -c XPC_DISPLAY_INFO_REQUEST /tmp/pp-cs.log) * 6 ))}"
 /usr/local/bin/tailscale status --json 2>/dev/null | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin); e=d.get("ExitNodeStatus") or {}; n=[p.get("HostName") for p in (d.get("Peer") or {}).values() if p.get("ExitNode")]; print("ts=" + json.dumps({"up": d.get("BackendState") == "Running", "state": d.get("BackendState"), "ip": ((d.get("Self") or {}).get("TailscaleIPs") or [None])[0], "exit_node": n[0] if n else None, "exit_online": bool(e.get("Online"))}))'
 """
 
 
 def air_network():
-    """The laptop's Wi-Fi network and Tailscale, read over ssh (Tailscale): read-only, a few seconds. Unreachable is
+    """The laptop's Wi-Fi network, Tailscale and colorsync load (K24: CPU % of a core and display-info requests per
+    minute, over 10 s), read over ssh (Tailscale): read-only, about 15 s. Unreachable is
     itself the signal (Tailscale off, or the laptop asleep)."""
     out = {'checked': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
     try:
@@ -130,7 +134,12 @@ def air_network():
     out['reachable'] = True
     for line in p.stdout.splitlines():
         k, _, v = line.partition('=')
-        if k == 'ts':
+        if k == 'cs':
+            try:
+                out['colorsync'] = json.loads(v)
+            except ValueError:
+                pass
+        elif k == 'ts':
             try:
                 out['tailscale'] = json.loads(v)
             except ValueError:

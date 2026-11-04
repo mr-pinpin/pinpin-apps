@@ -1,7 +1,7 @@
 #!/bin/bash
 # End-to-end on the laptop (run from the VPS, as root): a scratch virtual display (screen 47, through pinpin-displays),
 # the weather app assigned to it, the runner (installed/updated as the LaunchAgent) opens its window there; we check the page connected (SSE client on the
-# Mini), speak to it, capture the display region, then undo everything and run air_smoke.sh.
+# Mini), speak to it, capture the display region, then undo everything (display 47 stays: the scratch pool, never removed) and run air_smoke.sh.
 # Bench lock (quest-wall-screen bench/benchlock.py, AGENTS.md): the test holds it SHARED (LOCK=exclusive while an
 # old-style benchmark campaign runs), air_smoke runs afterwards under EXCLUSIVE. START/END go to bench/activity.log.
 #   [LOCK=shared|exclusive] [QWS_TOOLS=/root/work/qws-ad] bash tools/air_test.sh [APP]
@@ -21,13 +21,15 @@ log "START runner test: scratch display $ID, app $APP, Chrome --app window (benc
 cleanup() {
   api "-X POST -H Content-Type:application/json -d '{\"app\": null}' 127.0.0.1:57830/api/screens/$ID/app" >/dev/null
   sleep 5  # the runner closes the window itself once the screen has no app
-  $A "pkill -f 'pinpin-apps/profiles/screen-$ID' ; sleep 1; curl -s -m40 -X POST '127.0.0.1:57710/remove?id=$ID' >/dev/null; kill \$(cat /tmp/pp-caf.pid 2>/dev/null) 2>/dev/null; tail -4 ~/.local/share/pinpin-apps/runner.log"
+  $A "pkill -f 'pinpin-apps/profiles/screen-$ID' ; sleep 1; kill \$(cat /tmp/pp-caf.pid 2>/dev/null) 2>/dev/null; tail -4 ~/.local/share/pinpin-apps/runner.log"
   $BL release "$tok"
   (cd $T && $BL exclusive --who apps --max 300 -- bash bench/air_smoke.sh); smoke=$?
   log "END runner test: result=$result smoke=$([ $smoke = 0 ] && echo pass || echo FAIL) (bench lock released)"
 }
 result=fail; trap cleanup EXIT
-$A "caffeinate -u -t 120 >/dev/null 2>&1 & echo \$! > /tmp/pp-caf.pid; curl -s -m40 -X POST '127.0.0.1:57710/displays?id=$ID&w=1920&h=1200&scale=1' >/dev/null; sleep 3; curl -s 127.0.0.1:57710/displays"; echo
+$A "caffeinate -u -t 120 >/dev/null 2>&1 & echo \$! > /tmp/pp-caf.pid"
+$A "bash -s $ID 1920 1200 1" < tools/pool_display.sh  # the pool display: reused, never removed (AGENTS.md)
+$A "curl -s 127.0.0.1:57710/displays"; echo
 api "-X POST -H Content-Type:application/json -d '{\"app\": \"$APP\"}' 127.0.0.1:57830/api/screens/$ID/app" || { echo "assign failed"; exit 1; }; echo
 bash deploy/install-air.sh  # the runner must live in the GUI session (LaunchAgent): Chrome started from ssh cannot reach it
 ok=

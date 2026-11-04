@@ -19,14 +19,15 @@ log "START CDP input test on scratch display $ID (bench lock shared)"
 result=fail
 cleanup() {
   post open '{"url": null}' >/dev/null; post app '{"app": null}' >/dev/null; sleep 5
-  $A "curl -s -m40 -X POST '127.0.0.1:57710/remove?id=$ID' >/dev/null; kill \$(cat /tmp/pp-caf.pid 2>/dev/null) 2>/dev/null"
+  $A "kill \$(cat /tmp/pp-caf.pid 2>/dev/null) 2>/dev/null"
   $BL release "$tok"
   (cd $T && $BL exclusive --who apps --max 300 -- bash bench/air_smoke.sh); smoke=$?
   log "END CDP input test: result=$result smoke=$([ $smoke = 0 ] && echo pass || echo FAIL) (bench lock released)"
 }
 trap cleanup EXIT
 bash deploy/install-air.sh </dev/null
-$A "caffeinate -u -t 180 >/dev/null 2>&1 & echo \$! > /tmp/pp-caf.pid; curl -s -m40 -X POST '127.0.0.1:57710/displays?id=$ID&w=1920&h=1200&scale=1' >/dev/null"
+$A "caffeinate -u -t 180 >/dev/null 2>&1 & echo \$! > /tmp/pp-caf.pid"
+$A "bash -s $ID 1920 1200 1" < tools/pool_display.sh  # the pool display: reused, never removed (AGENTS.md)
 open_url https://example.com/ example.com || exit 1
 sleep 2
 # the link's centre as display u/v: page rect -> global point (window chrome on top) -> fraction of the display

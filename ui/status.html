@@ -183,6 +183,9 @@ function network(n, a) {  // n: the Mini's view (/api/status), a: the laptop rea
     h += row('Laptop Wi-Fi', mark(good) + esc(a.ssid || 'not on Wi-Fi'), ok(good), good ? '' : 'should be ' + esc(ex.air_ssid.join(' or ')));
     const t = a.tailscale;
     h += ts(t, 'Laptop');
+    const cs = a.colorsync;
+    if (cs) h += row('Laptop colorsync', `${cs.cpu > 40 ? '✗ ' : '✓ '}${cs.cpu}% of a core · ${cs.req_per_min} display requests/min`, cs.cpu > 40 ? 'bad' : cs.cpu > 25 ? 'warn' : 'good',
+      'grows with every virtual display created and removed (K24); a reboot resets it');
     if (t) h += row('Laptop exit node', t.exit_node ? mark(t.exit_online) + esc(t.exit_node) + (t.exit_online ? ' (on)' : ' (offline)') : '✗ off',
       t.exit_node && t.exit_online ? 'good' : 'warn', 'Meta and WhatsApp need it');
   } else {
