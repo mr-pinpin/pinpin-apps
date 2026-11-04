@@ -40,6 +40,8 @@ set -- $UV; echo "display $B $R; link at page $G -> display u,v $1,$2"
 echo "click: $(post click "{\"u\": $1, \"v\": $2}")"
 wait_href iana || exit 1
 echo "PASS click navigates"
+ev=$(post eval '{"js": "location.href + \" | \" + document.title"}'); echo "eval: $ev"
+case "$ev" in *iana.org*) echo "PASS eval";; *) echo "eval failed"; exit 1;; esac
 # scroll (display u/v = centre)
 open_url https://en.wikipedia.org/wiki/Moscow wikipedia || exit 1
 sleep 2; post scroll '{"u": 5000, "v": 5000, "dy": 900}' >/dev/null; sleep 1
