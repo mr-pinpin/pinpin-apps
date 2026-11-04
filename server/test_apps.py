@@ -566,6 +566,9 @@ class Apps(unittest.TestCase):
         self.assertTrue(self.wait(lambda: any(e == 'message' for e, _ in got))); close()
         inbox = self.req('GET', '/api/apps/mrecv/inbox')[1]
         self.assertEqual([(m['from'], m['kind'], m['data']) for m in inbox], [('msender', 'add-items', {'items': ['milk']})])
+        st, d, _ = self.req('POST', '/api/apps/mrecv/inbox', {'from': 'msender', 'kind': 'add-items', 'data': {}, 'dry': True})
+        self.assertEqual((st, d), (200, {'queued': False, 'dry': True}))  # a preview: checked, not stored
+        self.assertEqual(len(self.req('GET', '/api/apps/mrecv/inbox')[1]), 1)
         # not allowed: wrong kind, a sender without permission, a frame (Origin null), oversized
         self.assertEqual(self.req('POST', '/api/apps/mrecv/inbox', {'from': 'msender', 'kind': 'delete-all', 'data': {}})[0], 403)
         self.assertEqual(self.req('POST', '/api/apps/mrecv/inbox', {'from': 'weather', 'kind': 'add-items', 'data': {}})[0], 403)

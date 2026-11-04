@@ -73,6 +73,23 @@ pinpin.onVoice((text) => {
   save(); render();
 });
 
+// other apps (recipes: "add the missing ingredients to my list") send {items: [...], source}
+pinpin.onMessage(async (m) => {
+  await pinpin.ready;
+  if (m.kind !== 'add-items' || !Array.isArray(m.data && m.data.items)) return true;  // malformed: drop it
+  items = pinpin.store.get('items', []);
+  fresh = new Set();
+  for (const raw of m.data.items.slice(0, 30)) {
+    const a = clean(String(raw)); if (!a || a.length > 40) continue;
+    const k = find(a);
+    if (k >= 0) items[k].done = false; else items.push({ t: a, done: false, at: Date.now() });
+    fresh.add(k >= 0 ? items[k].t : a);
+  }
+  save(); render();
+  pinpin.toast(`Added ${fresh.size} from ${m.data.source || m.from}`);
+  return true;
+});
+
 pinpin.ready.then(() => { items = pinpin.store.get('items', []); render(); });
 </script>
 </body>

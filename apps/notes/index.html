@@ -61,6 +61,17 @@ pinpin.onVoice((text) => {
   save(); render();
 });
 
+// other apps (recipes: "save this recipe") send {text}
+pinpin.onMessage(async (m) => {
+  await pinpin.ready;
+  if (m.kind !== 'add-note' || typeof (m.data && m.data.text) !== 'string') return true;
+  notes = pinpin.store.get('notes', []);
+  freshId = Date.now();
+  notes.unshift({ id: freshId, c: notes.length ? ((notes[0].c ?? 0) + 1) % 5 : 0, t: m.data.text.slice(0, 200), at: Date.now() });
+  save(); render(); pinpin.toast('Note from ' + (m.data.source || m.from));
+  return true;
+});
+
 pinpin.ready.then(() => { notes = pinpin.store.get('notes', []); render(); setInterval(render, 60000); });
 </script>
 </body>

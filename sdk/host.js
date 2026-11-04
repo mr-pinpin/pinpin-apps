@@ -5,6 +5,9 @@
 //   fetch   through /proxy?app=<app> (the server enforces the manifest's permissions.fetch)
 //   ask     POST /api/ask with app=<app> (the server enforces permissions.ask)
 //   voice   server-sent events for this screen, forwarded into the frame; reload on app changes
+//   send    app-to-app messages: posted to the target's inbox on the Mini stamped with THIS app's id (the app can't
+//           forge a sender); the server checks the sender's permissions.send and the target's accepts
+//   inbox   this app's waiting messages, delivered into the frame; acknowledged ones are removed (not by previews)
 // Dev: ?dev=1 adds a text box that feeds the app's onVoice; ?say=a|b|c scripts phrases (render checks).
 (function () {
   'use strict';
@@ -32,6 +35,7 @@
     if (m.t === 'hello') {
       post({ t: 'init', app, screen, manifest, data, connected: H.connected });
       ready = true; queue.splice(0).forEach(post);
+      inbox();
     } else if (m.t === 'store' && m.data && typeof m.data === 'object') {
       const s = JSON.stringify(m.data);
       if (s.length > 200000) return post({ t: 'error', error: 'app data over 200 KB' });
@@ -43,6 +47,18 @@
         out = { ok: r.ok, status: r.status, body: await r.text(), type: r.headers.get('Content-Type') || '', cache: r.headers.get('X-Proxy-Cache') || '' };
       } catch (e) { out = { ok: false, status: 0, body: '', error: String(e) }; }
       post(Object.assign({ t: 'fetch', id: m.id }, out));
+    } else if (m.t === 'send') {
+      let out;
+      try {
+        const r = await fetch('/api/apps/' + encodeURIComponent(String(m.to)) + '/inbox', { method: 'POST',
+          headers: Object.assign({ 'Content-Type': 'application/json' }, HDR), body: JSON.stringify({ from: app, kind: String(m.kind), data: m.data, dry: preview }) });  // previews: checked, not delivered
+        const d = await r.json().catch(() => ({}));
+        out = r.ok ? { ok: true } : { ok: false, error: d.error || ('HTTP ' + r.status) };
+      } catch (e) { out = { ok: false, error: 'the Mini is not answering' }; }
+      post(Object.assign({ t: 'send', id: m.id }, out));
+    } else if (m.t === 'ack' && Array.isArray(m.ids) && !preview) {
+      fetch('/api/apps/' + app + '/inbox/ack', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, HDR),
+        body: JSON.stringify({ ids: m.ids.map(String) }) }).catch(() => {});
     } else if (m.t === 'ask') {
       let out;
       try {
@@ -59,11 +75,24 @@
     handle(e.data);
   });
 
+  const delivered = new Set();
+  async function inbox() {
+    try {
+      const r = await fetch('/api/apps/' + app + '/inbox', { cache: 'no-store', headers: HDR });
+      if (!r.ok) return;
+      for (const msg of await r.json()) {
+        if (delivered.has(msg.id)) continue;
+        delivered.add(msg.id); post({ t: 'message', msg });
+      }
+    } catch (e) {}
+  }
+
   function connect() {
     const es = new EventSource('/events?screen=' + encodeURIComponent(screen));
     es.addEventListener('hello', () => { H.connected = true; dot(); post({ t: 'net', connected: true }); });
     es.addEventListener('reload', () => location.reload());
     es.addEventListener('voice', (e) => { const d = JSON.parse(e.data); voice(d.text, d); });
+    es.addEventListener('message', () => { if (ready) inbox(); });
     es.onerror = () => { H.connected = false; dot(); post({ t: 'net', connected: false }); };
   }
   let dotEl;

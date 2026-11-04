@@ -13,19 +13,29 @@
   .rc .mi { font-size: 0.6rem; color: var(--pp-muted); }
   .rc .uses { font-size: 0.6rem; color: var(--pp-good); }
   .rc .miss { font-size: 0.6rem; color: var(--pp-bad); }
-  #recipe { display: none; flex-direction: column; gap: 0.4rem; }
+  #recipe { display: none; flex-direction: column; gap: 0.35rem; height: 100%; }
   #recipe.on { display: flex; }
-  #step { font-size: 1.7rem; line-height: 1.2; font-weight: 700; overflow: hidden; }
-  #stepn { color: var(--pp-accent); }
+  #step { font-size: 1.75rem; line-height: 1.2; font-weight: 700; overflow: hidden; transition: background .3s; border-radius: 0.2rem; }
+  #step.flash { background: #ffb84d33; }
+  #step mark { background: none; color: var(--pp-accent); }
+  #step .dur { color: #111; background: var(--pp-cool); border-radius: 0.2rem; padding: 0 0.15em; }
   #dots { display: flex; gap: 0.2rem; } #dots i { width: 0.35rem; height: 0.35rem; border-radius: 50%; background: var(--pp-line); }
   #dots i.on { background: var(--pp-accent); }
+  #ings { font-size: 0.62rem; color: var(--pp-muted); line-height: 1.35; }
+  #ings b { color: var(--pp-fg); } #ings .miss { color: var(--pp-bad); }
+  #timers { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+  .tm { background: var(--pp-card); border: 0.05rem solid var(--pp-line); border-radius: var(--pp-radius); padding: 0.1rem 0.4rem; font-size: 0.8rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .tm span { color: var(--pp-muted); font-size: 0.55rem; font-weight: 600; margin-left: 0.3rem; }
+  .tm.ring { background: var(--pp-bad); color: #111; animation: ring 0.6s infinite alternate; } .tm.ring span { color: #111; }
+  @keyframes ring { from { opacity: 1; } to { opacity: 0.45; } }
   .empty { font-size: 1rem; color: var(--pp-muted); }
   footer { display: flex; justify-content: space-between; align-items: baseline; }
   #src { font-size: 0.5rem; color: var(--pp-muted); }
 </style>
 </head>
 <body>
-<header class="pp-row"><h1 id="title">What can I cook?</h1><div class="pp-grow"></div><div id="busy" class="pp-accent pp-small"></div></header>
+<header class="pp-row"><h1 id="title" class="pp-clip">What can I cook?</h1><div class="pp-grow"></div><div id="busy" class="pp-accent pp-small"></div></header>
+<div id="timers"></div>
 <div id="have"></div>
 <main id="main" class="pp-grow">
   <section id="list"></section>
@@ -33,7 +43,7 @@
     <div class="pp-row"><div id="rtitle" class="pp-grow pp-clip pp-muted"></div><div id="rmin" class="pp-muted pp-small"></div></div>
     <div id="dots"></div>
     <div id="step" class="pp-grow"></div>
-    <div id="ruses" class="pp-small pp-muted"></div>
+    <div id="ings"></div>
   </section>
 </main>
 <footer><div class="pp-hint" id="hint"></div><div id="src"></div></footer>
@@ -67,7 +77,7 @@ function split(text) {
     .split(/\s*(?:,|;|\band\b|\bwith\b|\bplus\b|\balso\b|\.)\s*/i).map(norm).filter(Boolean);
 }
 
-let S = { have: [], recipes: [], source: '', view: 'list', pick: 0, step: 0 };
+let S = { have: [], recipes: [], source: '', view: 'list', pick: 0, step: 0, timers: [] };
 let askTimer = null, asking = 0;
 
 function save() { pinpin.store.set('state', S); }
@@ -83,10 +93,14 @@ function render() {
     $('rtitle').textContent = 'Step ' + (S.step + 1) + ' of ' + n;
     $('rmin').textContent = r.minutes ? r.minutes + ' min' : '';
     $('dots').innerHTML = r.steps.map((_, i) => `<i class="${i <= S.step ? 'on' : ''}"></i>`).join('');
-    $('step').textContent = r.steps[S.step] || '';
-    $('ruses').innerHTML = (r.uses || []).map(E).join(' · ') + (r.missing && r.missing.length ? ` <span style="color:var(--pp-bad)">· need ${r.missing.map(E).join(', ')}</span>` : '');
-    pinpin.fit($('step'), { max: 1, min: 0.55 });
-    $('hint').innerHTML = 'Say <b>next</b> · <b>back</b> · <b>list</b>';
+    $('step').innerHTML = highlight(r.steps[S.step] || '', r);
+    const inStep = names(r).filter((n) => wordRe(n).test(r.steps[S.step] || ''));
+    $('ings').innerHTML = 'Ingredients: ' + (r.ingredients || []).map((i) =>
+      `<span class="${(r.missing || []).some((m) => wordRe(m).test(i)) ? 'miss' : ''}">${inStep.some((n) => wordRe(n).test(i)) ? '<b>' + E(i) + '</b>' : E(i)}</span>`).join(' · ');
+    pinpin.fit($('step'), { max: 1, min: 0.5 });
+    const d = duration(r.steps[S.step] || '');
+    $('hint').innerHTML = 'Say <b>next</b> · <b>back</b> · <b>repeat</b> · <b>how long?</b>' + (d ? ' · <b>start timer</b>' : '') +
+      ((r.missing || []).length ? ' · <b>add missing to my list</b>' : '') + ' · <b>save this recipe</b>';
   } else {
     S.view = 'list'; list.style.display = ''; rec.classList.remove('on');
     $('title').textContent = 'What can I cook?';
@@ -107,7 +121,8 @@ function fromCatalogue(have, exclude, n) {
     const uses = r.needs.filter((x) => H.has(x)), extra = r.extra.filter((x) => H.has(x)), missing = r.needs.filter((x) => !H.has(x));
     return { r, uses: uses.concat(extra), missing, score: uses.length * 2 + extra.length - missing.length * 1.5 };
   }).filter((x) => x.uses.length && x.missing.length <= 2).sort((a, b) => b.score - a.score);
-  return scored.slice(0, n).map((x) => ({ title: x.r.title, minutes: x.r.minutes, uses: x.uses, missing: x.missing, steps: x.r.steps }));
+  return scored.slice(0, n).map((x) => ({ title: x.r.title, minutes: x.r.minutes, uses: x.uses, missing: x.missing, steps: x.r.steps,
+    ingredients: x.r.needs.concat(x.r.extra.filter((e) => H.has(e))) }));
 }
 
 async function suggest(more) {
@@ -123,12 +138,13 @@ async function suggest(more) {
     ` Suggest ${n} recipes I can cook now (pantry staples like salt, oil, pepper, water are fine).` +
     (pinpin.config.diet ? ` Diet: ${pinpin.config.diet}.` : ''),
     { json: true, model: 'haiku', system: 'You run a recipe app on a small screen above the kitchen oven, read from 1-2 m away. Reply with JSON only: ' +
-      '{"recipes":[{"title":"short name","minutes":20,"uses":["ingredients from my list"],"missing":["at most 2 non-staples I lack"],"steps":["3 to 7 short imperative steps, at most 14 words each"]}]}' });
+      '{"recipes":[{"title":"short name","minutes":20,"ingredients":["quantity + ingredient, e.g. 3 eggs"],"uses":["ingredients from my list"],"missing":["at most 2 non-staples I lack"],"steps":["3 to 7 short imperative steps, at most 14 words each, with times like 10 minutes where it matters"]}]}' });
   if (ticket !== asking) return;  // a newer request superseded this one
   const js = r.json && Array.isArray(r.json.recipes) ? r.json.recipes : null;
   if (js && js.length) {
     out = js.filter((x) => x && x.title && Array.isArray(x.steps) && x.steps.length).slice(0, n)
-      .map((x) => ({ title: String(x.title), minutes: +x.minutes || 0, uses: (x.uses || []).map(String), missing: (x.missing || []).map(String), steps: x.steps.map(String) }));
+      .map((x) => ({ title: String(x.title), minutes: +x.minutes || 0, uses: (x.uses || []).map(String), missing: (x.missing || []).map(String),
+        steps: x.steps.map(String), ingredients: (Array.isArray(x.ingredients) ? x.ingredients : (x.uses || []).concat(x.missing || [])).map(String) }));
     source = 'ideas: Claude';
   }
   if (!out || !out.length) { out = quick; source = 'ideas: built-in list' + (r.error ? ' · Claude is offline' : r.stub ? '' : ' (Claude did not answer)'); }
@@ -140,6 +156,72 @@ async function suggest(more) {
   if (source === 'ideas: Claude') pinpin.toast('Claude has ideas', 1500);
 }
 function suggestSoon() { clearTimeout(askTimer); askTimer = setTimeout(() => suggest(false), 1200); }
+
+// ---- cooking helpers
+function wordRe(name) {  // "tomato" also matches "tomatoes"; the last word of "cottage cheese" may be plural
+  const w = String(name).toLowerCase().replace(/^\d+\S*\s+/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&').trim();
+  return new RegExp('\\b' + w + '(e?s)?\\b', 'i');
+}
+function names(r) { return Array.from(new Set([].concat(r.uses || [], r.missing || [], (r.ingredients || []).map(norm)).map((x) => norm(x) || x).filter((x) => x && x.length > 2))); }
+const DUR = /(\d+(?:[.,]\d+)?)(?:\s*(?:-|–|to)\s*(\d+(?:[.,]\d+)?))?\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)\b/i;
+const WORDNUM = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, fifteen: 15, twenty: 20, thirty: 30, forty: 40, 'forty five': 45, half: 0.5 };
+function duration(text) {  // the longest end of "10 minutes", "2-3 minutes", "half an hour", "five minutes"
+  let t = String(text).toLowerCase().replace(/half an hour/, '30 minutes').replace(/an hour/, '1 hour');
+  t = t.replace(/\b(forty five|one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty|thirty|forty)\b/g, (w) => WORDNUM[w]);
+  const m = t.match(DUR); if (!m) return 0;
+  const n = parseFloat((m[2] || m[1]).replace(',', '.')), u = m[3][0];
+  return Math.round(n * (u === 'h' ? 3600e3 : u === 's' ? 1e3 : 60e3));
+}
+function highlight(step, r) {
+  let h = E(step);
+  for (const n of names(r).sort((a, b) => b.length - a.length)) h = h.replace(new RegExp('(^|[^\\w>])(' + wordRe(n).source.slice(2, -2) + ')(?![\\w<])', 'gi'), '$1<mark>$2</mark>');
+  return h.replace(new RegExp(DUR.source, 'gi'), (x) => `<span class="dur">${x}</span>`);
+}
+function mmss(ms) { const s = Math.max(0, Math.ceil(ms / 1000)); return (s >= 3600 ? Math.floor(s / 3600) + ':' + String(Math.floor(s / 60) % 60).padStart(2, '0') : Math.floor(s / 60)) + ':' + String(s % 60).padStart(2, '0'); }
+function startTimer(ms, label) {
+  S.timers = (S.timers || []).filter((x) => x.end > Date.now() - 600e3).slice(-3);
+  S.timers.push({ id: Date.now(), label, end: Date.now() + ms }); save(); tickTimers();
+  pinpin.toast('Timer ' + mmss(ms) + ' started');
+}
+function stopTimers(all) {
+  const now = Date.now(), ringing = S.timers.filter((x) => x.end <= now);
+  S.timers = all && !ringing.length ? S.timers.slice(0, -1) : S.timers.filter((x) => x.end > now);
+  save(); tickTimers();
+}
+let audio;
+function beep() {
+  try {
+    audio = audio || new AudioContext();
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.frequency.value = 880; g.gain.value = 0.2; o.connect(g); g.connect(audio.destination); o.start(); o.stop(audio.currentTime + 0.25);
+  } catch (e) {}
+}
+function tickTimers() {
+  const now = Date.now(), ts = S.timers || [];
+  $('timers').innerHTML = ts.map((x) => `<div class="tm${x.end <= now ? ' ring' : ''}">${x.end <= now ? 'DONE' : mmss(x.end - now)}<span>${E(x.label)}</span></div>`).join('');
+  for (const x of ts) if (x.end <= now && !x.rung) { x.rung = true; save(); pinpin.toast('⏰ ' + x.label + ' is done. Say “stop”.', 6000); }
+  if (ts.some((x) => x.end <= now) && Math.floor(now / 1000) % 2 === 0) beep();
+}
+function howLong(r) {
+  const here = duration(r.steps[S.step]), rest = r.steps.slice(S.step).reduce((a, s) => a + duration(s), 0);
+  const running = (S.timers || []).filter((x) => x.end > Date.now()).map((x) => `${x.label}: ${mmss(x.end - Date.now())} left`);
+  const parts = [`Step ${S.step + 1} of ${r.steps.length}`];
+  if (here) parts.push('this step about ' + mmss(here).replace(/:00$/, ' min'));
+  if (rest) parts.push('about ' + Math.round(rest / 60000) + ' min to the end');
+  else if (r.minutes) parts.push(r.minutes + ' min in all');
+  pinpin.toast(parts.concat(running).join(' · '), 7000);
+}
+async function toShopping(r) {
+  const items = (r.missing && r.missing.length ? r.missing : r.ingredients || []).slice(0, 20);
+  if (!items.length) return pinpin.toast('Nothing missing for this one');
+  const res = await pinpin.send('shopping', 'add-items', { items, source: r.title });
+  pinpin.toast(res.ok ? `Added to your shopping list: ${items.join(', ')}` : 'Could not reach the list: ' + res.error, 5000);
+}
+async function toNotes(r) {
+  const text = `${r.title}${r.minutes ? ' (' + r.minutes + ' min)' : ''}: ${(r.ingredients || []).join(', ')}`;
+  const res = await pinpin.send('notes', 'add-note', { text, source: 'recipes' });
+  pinpin.toast(res.ok ? 'Saved to your notes' : 'Could not save: ' + res.error);
+}
 
 const ORD = { first: 1, one: 1, second: 2, two: 2, third: 3, three: 3, fourth: 4, four: 4, fifth: 5, five: 5, last: -1 };
 function open(k) {
@@ -153,13 +235,26 @@ function onVoice(text) {
   let m;
   if (/^(clear|start over|reset|new list|empty( the list)?|clear (all|everything|the list))$/.test(t)) { S = { ...S, have: [], recipes: [], view: 'list', source: '' }; save(); return render(); }
   if ((m = t.match(/^(?:show |open |make |cook |read )?(?:recipe |number |the )?(\d|first|second|third|fourth|fifth|one|two|three|four|five|last)(?: one| recipe)?$/))) return open(/\d/.test(m[1]) ? +m[1] : ORD[m[1]]);
+  if (/^(stop|stop (the )?(timer|alarm|ringing)|dismiss)$/.test(t) && S.timers.some((x) => x.end <= Date.now())) return stopTimers(false);
   if (S.view === 'recipe') {
     const r = S.recipes[S.pick];
     if (/^(next|next step|continue|go on|done|ok(ay)?|and then)$/.test(t)) { if (S.step < r.steps.length - 1) S.step++; else pinpin.toast('That was the last step. Enjoy!'); save(); return render(); }
     if (/^(back|previous|previous step|go back)$/.test(t)) { if (S.step > 0) S.step--; else S.view = 'list'; save(); return render(); }
     if ((m = t.match(/^(?:go to )?step (\d+)$/))) { S.step = Math.min(Math.max(+m[1] - 1, 0), r.steps.length - 1); save(); return render(); }
-    if (/^(repeat|again|what)$/.test(t)) return pinpin.toast(r.steps[S.step], 5000);
-    if (/^(list|close|recipes|suggestions|other recipes|back to (the )?list)$/.test(t)) { S.view = 'list'; save(); return render(); }
+    if (/^(repeat|again|what|say (that|it) again|read (it|that) again|pardon|sorry)$/.test(t)) {
+      render(); $('step').classList.add('flash'); setTimeout(() => $('step').classList.remove('flash'), 900); return;
+    }
+    if (/^(how long|how much longer|how much time|time left|how long( is)? (it|this|left))\b/.test(t)) return howLong(r);
+    if ((m = t.match(/^(?:start|set)(?: a| the)? timer(?: for)?(?: (.+))?$|^timer(?: for)? (.+)$/))) {
+      const said = m[1] || m[2], ms = said ? duration(said) : duration(r.steps[S.step]);
+      if (!ms) return pinpin.toast(said ? 'Say “timer 5 minutes”' : 'No time in this step: say “timer 5 minutes”');
+      return startTimer(ms, said ? 'timer' : 'step ' + (S.step + 1));
+    }
+    if (/^(stop|stop (the )?(timer|alarm|ringing)|dismiss|ok(ay)? stop|cancel (the )?timer)$/.test(t)) return stopTimers(/cancel/.test(t));
+    if (/^(ingredients|what do i need|show (the )?ingredients)$/.test(t)) return pinpin.toast((r.ingredients || []).join(', ') || 'No list for this one', 6000);
+    if (/\b(add|put)\b.*\b(missing|ingredients|it|them|everything)\b.*\b(list|shopping)\b|^add (the )?missing( ones| ingredients)?$/.test(t)) return toShopping(r);
+    if (/^(save|keep|remember)( this| the)? recipe( to (my )?notes)?$|^save (it|this)( to (my )?notes)?$/.test(t)) return toNotes(r);
+    if (/^(list|close|recipes|suggestions|other recipes|back to (the )?list|stop cooking)$/.test(t)) { S.view = 'list'; save(); return render(); }
   }
   if (/^(more|other ideas|something else|more ideas|next|different ones)$/.test(t)) return suggest(true);
   if ((m = t.match(/^(?:remove|delete|without|no|no more|i (?:don't|do not) have|out of)\s+(.+)$/))) {
@@ -172,7 +267,7 @@ function onVoice(text) {
 }
 
 pinpin.onVoice(onVoice);
-pinpin.ready.then(() => { S = Object.assign(S, pinpin.store.get('state', {})); render(); });
+pinpin.ready.then(() => { S = Object.assign(S, pinpin.store.get('state', {})); S.timers = S.timers || []; render(); tickTimers(); setInterval(tickTimers, 1000); });
 </script>
 </body>
 </html>

@@ -458,7 +458,7 @@ class State:
             json.dump(msgs, f)
         os.replace(p + '.tmp', p)
 
-    def post_message(self, sender, target, kind, data):
+    def post_message(self, sender, target, kind, data, dry=False):
         """'' when queued, else why not."""
         sm, tm = self.repo.manifest(sender), self.repo.manifest(target)
         if sm is None or tm is None:
@@ -469,6 +469,8 @@ class State:
             return f'{target} does not accept "{kind}" messages (accepts {tm.get("accepts", [])})'
         if len(json.dumps(data)) > self.MAX_MSG:
             return 'message over 16 KB'
+        if dry:  # a preview or render check: everything checked, nothing delivered
+            return ''
         with self.opens_lock:
             msgs = self.inbox(target)[-(self.MAX_INBOX - 1):]
             msgs.append({'id': f'{int(time.time() * 1000)}-{len(msgs)}', 'from': sender, 'kind': kind, 'data': data, 'at': now()})
@@ -1031,9 +1033,10 @@ class Handler(BaseHTTPRequestHandler):
             sender, kind = d.get('from'), d.get('kind')
             if not (isinstance(sender, str) and manifest.check_id(sender) and isinstance(kind, str)):
                 return self.send(400, {'error': 'from (the sending app, set by its host) and kind required'})
-            err = st.post_message(sender, parts[2], kind, d.get('data'))
+            dry = bool(d.get('dry'))
+            err = st.post_message(sender, parts[2], kind, d.get('data'), dry)
             return self.send(403 if 'may not' in err or 'accept' in err else 404 if err.startswith('no app') else 400 if err else 200,
-                             {'error': err} if err else {'queued': True})
+                             {'error': err} if err else {'queued': not dry, 'dry': dry})
         if parts == ['api', 'build']:  # the control page's "ask Claude to build an app": the assistant runs its app tools
             prompt = d.get('prompt')
             if not (isinstance(prompt, str) and prompt.strip()):
