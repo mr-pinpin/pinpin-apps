@@ -1236,8 +1236,21 @@ class Handler(BaseHTTPRequestHandler):
                 'checks': checks, 'kanban': st.kanban.summary(),
                 'network': {'air_ip': st.air_ip or None, 'air_seen_s': round(time.time() - st.air_seen) if st.air_seen else None,
                             'mini_tailscale': st.tailscale(), 'headset_ssid': (st.headset.last or {}).get('ssid'),
+                            'screen_tools': self.screen_tools(),
                             'expect': self.network_expect()},
                 'house_rev': (st.house.doc or {}).get('rev'), 'assistant': st.assistant.name}
+
+    def screen_tools(self):
+        """work-42's Mini screen-tools helper (K20, :57860): its /health, or why not."""
+        try:
+            with urllib.request.urlopen('http://127.0.0.1:57860/health', timeout=1.5) as r:
+                d = json.loads(r.read() or b'{}')
+            return {'up': True, 'health': d if isinstance(d, dict) else {'raw': str(d)[:200]}}
+        except urllib.error.URLError as e:
+            refused = isinstance(e.reason, ConnectionRefusedError)
+            return {'up': False, 'error': 'not running yet' if refused else str(e.reason)[:120]}
+        except Exception as e:
+            return {'up': False, 'error': f'{type(e).__name__}: {e}'[:120]}
 
     def network_expect(self):
         """<data>/network.json overrides: {"air_ssid": ..., "headset_ssid": [...]}."""
