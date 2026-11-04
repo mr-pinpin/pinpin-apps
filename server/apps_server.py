@@ -30,6 +30,7 @@
   POST /api/screens/<id>/click|move|scroll|type|key   input into that screen's runner window over CDP (forwarded to
                                     the laptop runner): {u, v (0..10000 of the display, or space:"viewport"), button,
                                     count|double} | {u, v} | {u, v, dx, dy} | {text} | {key|combo: "Cmd+L"}
+  POST /api/build                   {prompt, app?, screen?} -> the assistant builds/changes an app with its tools (control page)
   POST /api/ask                     {app, screen, prompt, system?, json?, model?} -> {text, json?} (assistant, or the stub)
   GET  /proxy?app=<app>&url=<url>   GET through the Mini, only to hosts in the app's permissions.fetch
 
@@ -363,6 +364,18 @@ class State:
     @assistant.setter
     def assistant(self, v):
         self._assistant = v
+
+    def build_url(self):
+        """The assistant's app-building endpoint: <data>/build-url if set, else /api/build next to its /api/ask."""
+        try:
+            with open(os.path.join(self.data, 'build-url')) as f:
+                u = f.readline().strip()
+                if u:
+                    return u
+        except OSError:
+            pass
+        a = self.assistant
+        return a.url.rsplit('/api/ask', 1)[0] + '/api/build' if isinstance(a, HttpAssistant) else ''
 
     def screens_showing(self, app_id):
         return [s for s, a in self.house.mapping().items() if a == app_id]
@@ -852,6 +865,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, st.assistant.ask({k: d[k] for k in ('app', 'screen', 'prompt', 'system', 'json', 'model') if k in d}))
             except Exception as e:
                 return self.send(502, {'error': f'assistant: {e}', 'stub': True})
+        if parts == ['api', 'build']:  # the control page's "ask Claude to build an app": the assistant runs its app tools
+            prompt = d.get('prompt')
+            if not (isinstance(prompt, str) and prompt.strip()):
+                return self.send(400, {'error': 'prompt required'})
+            if d.get('app') is not None and d['app'] not in st.repo.ids():
+                return self.send(400, {'error': f'no app {d["app"]!r}'})
+            url = st.build_url()
+            if not url:
+                return self.send(502, {'error': 'no assistant configured'})
+            body = {'prompt': prompt.strip()[:4000], 'app': d.get('app'), 'screen': d.get('screen'), 'from': 'control-page'}
+            req = urllib.request.Request(url, data=json.dumps(body).encode(), method='POST', headers={'Content-Type': 'application/json'})
+            try:
+                with urllib.request.urlopen(req, timeout=240) as r:
+                    return self.send(r.status, body=r.read())
+            except urllib.error.HTTPError as e:
+                return self.send(e.code, body=e.read())
+            except Exception as e:
+                return self.send(502, {'error': f'assistant: {e}'})
         if parts[:2] == ['api', 'apps'] and len(parts) == 4 and parts[3] == 'rollback' and parts[2] in st.repo.ids():
             c = str(d.get('commit', ''))
             if not SHA.match(c):

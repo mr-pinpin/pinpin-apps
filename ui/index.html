@@ -30,11 +30,29 @@
   .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--accent); color: #111; font-weight: 700; padding: 8px 16px; border-radius: 8px; opacity: 0; transition: .2s; pointer-events: none; }
   .toast.show { opacity: 1; }
   .err { color: var(--bad); }
+  .ask { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: grid; gap: 10px; }
+  .ask textarea { width: 100%; font: inherit; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; resize: vertical; }
+  .ask .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .ask label { color: var(--muted); font-size: 13px; display: flex; gap: 6px; align-items: center; }
+  .ask button { font: inherit; font-weight: 700; background: var(--accent); color: #111; border: 0; border-radius: 8px; padding: 9px 18px; margin-left: auto; cursor: pointer; }
+  .ask button:disabled { opacity: .5; cursor: wait; }
+  .answer { white-space: pre-wrap; font-size: 14px; } .answer:empty { display: none; }
 </style>
 </head>
 <body>
 <h1>PinPin apps</h1>
 <div class="sub">Small apps on the wall screens. Pick what each screen shows; ask Claude on a screen to make a new one.</div>
+
+<h2>Ask Claude</h2>
+<form class="ask" id="ask">
+  <textarea id="prompt" rows="3" placeholder="e.g. &ldquo;a kitchen timer with three named timers&rdquo; or &ldquo;make the weather app show the wind bigger&rdquo;" required></textarea>
+  <div class="row">
+    <label>App <select id="askApp"><option value="">a new app</option></select></label>
+    <label>Show on <select id="askScreen"><option value="">no screen</option></select></label>
+    <button id="askBtn">Ask Claude</button>
+  </div>
+  <div id="answer" class="answer"></div>
+</form>
 
 <h2>Screens</h2>
 <div class="screens" id="screens"><div class="sub">Loading…</div></div>
@@ -89,7 +107,7 @@ async function load() {
   try {
     const [a, s] = await Promise.all([fetch('/api/apps').then((r) => r.json()), fetch('/api/screens').then((r) => r.json())]);
     apps = a;
-    $('screens').innerHTML = screens(s);
+    $('screens').innerHTML = screens(s); fillAsk(s);
     if (!$('gallery').dataset.done || $('gallery').dataset.done !== apps.map((x) => x.commit).join()) {
       $('gallery').innerHTML = gallery(); $('gallery').dataset.done = apps.map((x) => x.commit).join();
       document.querySelectorAll('.thumb').forEach((t) => {  // hide "rendering…" once the image is there
@@ -99,6 +117,29 @@ async function load() {
     document.querySelectorAll('select[data-screen]').forEach((e) => e.onchange = () => assign(e.dataset.screen, e.value));
   } catch (e) { $('screens').innerHTML = '<div class="err">The apps server is not answering.</div>'; }
 }
+function fillAsk(list) {
+  const keep = (sel, opts) => { const v = sel.value; sel.innerHTML = opts; sel.value = v; };
+  keep($('askApp'), '<option value="">a new app</option>' + apps.map((a) => `<option value="${esc(a.id)}">change: ${esc(a.name)}</option>`).join(''));
+  keep($('askScreen'), '<option value="">no screen</option>' + list.filter((s) => s.role !== 'main').map((s) => `<option value="${esc(s.screen)}">screen ${esc(s.screen)}</option>`).join(''));
+}
+$('ask').onsubmit = async (e) => {
+  e.preventDefault();
+  const btn = $('askBtn'), out = $('answer'), t0 = Date.now();
+  btn.disabled = true; out.className = 'answer';
+  const tick = setInterval(() => { out.textContent = `Claude is working… ${Math.round((Date.now() - t0) / 1000)} s (building, checking and fixing the app takes up to a few minutes)`; }, 500);
+  try {
+    const body = { prompt: $('prompt').value, app: $('askApp').value || null, screen: $('askScreen').value ? +$('askScreen').value : null };
+    const r = await fetch('/api/build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json().catch(() => ({}));
+    clearInterval(tick);
+    if (!r.ok) { out.className = 'answer err'; out.textContent = 'Claude could not do it: ' + (d.error || ('HTTP ' + r.status)); }
+    else {
+      out.innerHTML = esc(d.text || 'Done.') + (d.app ? `\n\n<a href="/app/${esc(d.app)}/?dev=1" target="_blank">Open ${esc(d.app)} →</a>` : '');
+      $('prompt').value = ''; $('gallery').dataset.done = ''; load();
+    }
+  } catch (err) { clearInterval(tick); out.className = 'answer err'; out.textContent = 'The apps server is not answering.'; }
+  btn.disabled = false;
+};
 load(); setInterval(load, 15000);
 </script>
 </body>

@@ -520,6 +520,26 @@ class Apps(unittest.TestCase):
         finally:
             srv.shutdown(); srv.server_close(); self.st.runner_url = ''
 
+    def test_build_forwarded_to_assistant(self):
+        class B(BaseHTTPRequestHandler):
+            seen = []
+            def log_message(self, *a): pass
+            def do_POST(self):
+                B.seen.append((self.path, json.loads(self.rfile.read(int(self.headers['Content-Length'])))))
+                b = json.dumps({'text': 'Made **egg-timer**.', 'app': 'egg-timer'}).encode()
+                self.send_response(200); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
+        srv = bg(ThreadingHTTPServer(('127.0.0.1', 0), B))
+        try:
+            self.assertEqual(self.req('POST', '/api/build', {'prompt': 'x'})[0], 502)  # stub assistant: nowhere to build
+            self.st.assistant = apps_server.make_assistant(f'http://127.0.0.1:{srv.server_address[1]}/api/ask')
+            st, d, _ = self.req('POST', '/api/build', {'prompt': ' an egg timer ', 'screen': 47})
+            self.assertEqual((st, d['app']), (200, 'egg-timer'))
+            self.assertEqual(B.seen[-1], ('/api/build', {'prompt': 'an egg timer', 'app': None, 'screen': 47, 'from': 'control-page'}))
+            self.assertEqual(self.req('POST', '/api/build', {'prompt': 'x', 'app': 'nope'})[0], 400)
+            self.assertEqual(self.req('POST', '/api/build', {'prompt': ''})[0], 400)
+        finally:
+            self.st.assistant = None; srv.shutdown(); srv.server_close()
+
     def test_authoring_guide(self):
         st, text, r = self.req('GET', '/api/authoring')
         self.assertEqual(st, 200); self.assertIn('PUT http://', text)
