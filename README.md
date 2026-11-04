@@ -82,9 +82,27 @@ reports JS errors and the text on the page.
 | `POST /api/screens/<id>/say {text}` | dictation to the app on that screen |
 | `POST /api/screens/<id>/reload` | |
 | `POST /api/screens/<id>/open {url \| null}` | the runner navigates that screen's window to the URL (and creates the window if needed). `null` goes back to the app. Poll `GET /api/screens` until `shown_seq == seq` |
+| `POST /api/screens/<id>/click\|move\|scroll\|type\|key\|eval` | input into the screen's window over CDP, through the laptop runner. `eval {js}` → `{ok, value}` |
+| `POST /api/apps/<id>/inbox {from, kind, data}` | app-to-app messages, posted by host pages only (the SDK's `pinpin.send` / `pinpin.onMessage`) |
+| `GET /api/auth` | token rollout: whether it's enforced yet, and the unauthenticated callers |
 | `POST /api/ask {app, screen, prompt, system?, json?}` | → the assistant (`--ask-url`, work-42's `/api/ask`) or the stub |
 | `GET /proxy?app=&url=` | GET only, to hosts in the app's `permissions.fetch` |
 | `GET /screen/<id>`, `GET /app/<id>/`, `GET /events?screen=` | the page a screen shows, a preview, server-sent events |
+
+### Token
+
+Powerful calls need `Authorization: Bearer <token>`:
+- input and eval, say, app, open and reload on screens;
+- build, app PUT and DELETE, rollback.
+
+The token is in `/root/.config/pinpin-apps/token` on the VPS, `~/pinpin-apps-data/token` on the Mini and
+`~/.local/share/pinpin-apps/token` on the laptop. All copies are mode 600 and none is in git.
+
+What stays open:
+- the read-only pages (`/`, `/status`, `/help`) and GETs;
+- the host pages' app-scoped calls (data, proxy, ask, inbox), which need the `X-PinPin` header that sandboxed app frames can't send.
+
+`~/pinpin-apps-data/auth.json` `{"enforce_after": epoch}` sets the grace period during which calls without the token are still served and logged.
 
 ### house.json
 
@@ -136,5 +154,10 @@ never committed.
   - Upload size and stall limits.
   - render_check's Chrome reaches only the apps server.
 - [x] M14: control page at `/` (gallery with live thumbnails, screens with app dropdowns); offline badges in weather, clock and recipes
+- [x] M15: morning status page `/status` and user guide `/help`. The guide's switch table is generated from flags.json, with the live headset toggles
+- [x] M16: kitchen.
+  - Recipes cooking mode (a big step, highlighted ingredients, next/back/repeat/how long, inline timers from the steps).
+  - App-to-app messages (a host-mediated inbox on the Mini; permissions.send / accepts) to the shopping list and notes.
+- [x] M17: eval over CDP; Mini cursor watcher (MINI click bug); a shared token on the powerful endpoints, with a logged grace hour
 - [ ] M9: an app on a real screen: waits for the user to say which screen is the kitchen one
 - [ ] M8: the assistant creates a new app end to end ("make me a timer app") and it appears on a screen. Rehearsed through the API: `apps/timer` was made from docs/AUTHORING.md with `check: true`, rendered with no errors, and its voice worked
