@@ -57,4 +57,11 @@ post type '{"text": "pinpin wall screens"}' >/dev/null
 post key '{"combo": "Enter"}' >/dev/null
 wait_href "search=pinpin" || exit 1
 echo "PASS type + Enter"
+# the video lever (focus policy, K15): a muted playing video; pause marks it ours, play resumes only ours
+open_url https://www.w3schools.com/html/mov_bbb.mp4 mov_bbb || exit 1
+sleep 2; post eval '{"js": "(async()=>{const v=document.querySelector(\"video\");v.muted=true;v.loop=true;await v.play();return !v.paused})()"}'; echo
+vp=$(post video '{"state": "pause"}'); echo "pause: $vp"
+case "$vp" in *'"paused_by_us": true'*) ;; *) echo "video pause failed"; exit 1;; esac
+sleep 1; vq=$(post video '{"state": "play"}'); sleep 1; vq=$(post video '{"state": "probe"}'); echo "after play: $vq"
+case "$vq" in *'"playing": true'*'"paused_by_us": false'*) echo "PASS video pause/play";; *) echo "video play failed"; exit 1;; esac
 result=pass
