@@ -186,6 +186,17 @@ class Board:
             self.save()
             return copy.deepcopy(c)
 
+    def delete(self, cid, d):
+        """Removes a card (a mistake, a test card). Its id is never reused; a short record stays in doc['deleted']."""
+        by = text(d, 'by') or 'unknown'
+        with self.lock:
+            c = self.find(cid)
+            self.doc['cards'].remove(c)
+            self.doc.setdefault('deleted', []).append({'id': c['id'], 'title': c['title'], 'by': by, 'at': now()})
+            del self.doc['deleted'][:-200]
+            self.save()
+            return {'id': c['id'], 'deleted': True, 'column': c['column'], 'title': c['title']}
+
     def summary(self):
         """For /status: counts per column, and the Doing and Review cards."""
         with self.lock:

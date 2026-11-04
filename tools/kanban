@@ -7,6 +7,7 @@
   kanban move K3 doing [-m "note"]                       columns: backlog next doing review done
   kanban update K3 [-t TITLE] [-d DETAILS] [-o OWNER] [-a AREA] [-l LINK]... [--set-links]
   kanban comment K3 "text"
+  kanban delete K3                                       remove a card (a mistake or a test card)
   kanban md                                              the board as markdown (= docs/captain/KANBAN.md)
 
 Who you are: --by NAME, or $PINPIN_WHO (e.g. work-42). --json prints the raw API answer.
@@ -106,6 +107,7 @@ def main():
     p.add_argument('-o', '--owner'); p.add_argument('-a', '--area'); p.add_argument('-l', '--link', action='append')
     p.add_argument('--set-links', action='store_true', help='replace the links instead of adding')
     p = sub.add_parser('comment'); p.add_argument('id'); p.add_argument('text')
+    p = sub.add_parser('delete'); p.add_argument('id')
     sub.add_parser('md')
     a = ap.parse_args()
     by = a.by or 'unknown'
@@ -138,6 +140,9 @@ def main():
         body = {'title': a.title, 'details': a.details, 'owner': a.owner, 'area': a.area, 'by': by}
         body['links' if a.set_links else 'add_links'] = a.link
         d = must(*call('POST', f'/api/kanban/{q(a.id)}/update', body))
+    elif a.cmd == 'delete':
+        d = must(*call('POST', f'/api/kanban/{q(a.id)}/delete', {'by': by}))
+        return print(json.dumps(d, ensure_ascii=False) if a.json else f'deleted: {d["id"]} {d["title"]}')
     elif a.cmd == 'comment':
         d = must(*call('POST', f'/api/kanban/{q(a.id)}/comment', {'text': a.text, 'by': by}))
     if a.json:

@@ -860,6 +860,14 @@ class Apps(unittest.TestCase):
         self.assertEqual(self.req('POST', '/api/kanban', {'title': 'x', 'links': 'a b'.split() * 11}, headers=J)[0], 400)
         self.assertEqual(self.req('POST', '/api/kanban', b'title=x', headers={'Content-Type': 'application/x-www-form-urlencoded'})[0], 415)
         self.assertEqual(self.req('POST', '/api/kanban', {'title': 'x'}, headers={**J, 'Origin': 'null'})[0], 403)
+        # the scratch board is separate; delete removes a card for good (its id is not reused)
+        sc = self.req('POST', '/api/kanban?board=scratch', {'title': 'nightly test card', 'by': 'nightly'}, headers=J)[1]
+        self.assertNotIn(sc['id'], [x['id'] for x in self.req('GET', '/api/kanban')[1]['cards']] if sc['id'] != k else [])
+        self.assertEqual(self.req('POST', f"/api/kanban/{sc['id']}/move?board=scratch", {'column': 'done'}, headers=J)[1]['column'], 'done')
+        self.assertTrue(self.req('POST', f"/api/kanban/{sc['id']}/delete?board=scratch", {'by': 'nightly'}, headers=J)[1]['deleted'])
+        self.assertEqual(self.req('GET', f"/api/kanban/{sc['id']}?board=scratch")[0], 404)
+        self.assertEqual(self.req('GET', '/api/kanban?board=scratch')[1]['deleted'][-1]['title'], 'nightly test card')
+        self.assertEqual(self.req('GET', f'/api/kanban/{k}')[0], 200)  # the live board untouched
         # the file survives a restart, and a broken file falls back to the previous copy
         path = os.path.join(self.st.data, 'kanban.json')
         self.assertEqual(apps_server.kanban.Board(path, apps_server.atomic_write).get(k)['owner'], 'work-c4')

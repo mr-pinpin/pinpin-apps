@@ -15,6 +15,7 @@ kanban add "Room screenshot crash" -o work-42 -a assistant -c next -d "detailsâ€
 kanban move K3 doing  [-m "note"]  # backlog next doing review done
 kanban update K3 -o work-c4 -l apps:def5678     # -t TITLE -d DETAILS -a AREA; -l adds a link (--set-links replaces)
 kanban comment K3 "shipped in v0.56, please review"
+kanban delete K3                   # a mistake or a test card (listed under "deleted" in the JSON)
 kanban md                          # the board as markdown
 ```
 
@@ -32,6 +33,8 @@ its own token. Elsewhere: `PINPIN_KANBAN_URL=http://192.168.0.50:57830 PINPIN_TO
 | `POST /api/kanban/K3/move` | `{column, note?, by}` |
 | `POST /api/kanban/K3/update` | `{title?, details?, owner?, area?, links? (replace), add_links?, by}` |
 | `POST /api/kanban/K3/comment` | `{text, by}` |
+| `POST /api/kanban/K3/delete` | `{by}`: gone from the board, recorded under `deleted` |
+| `?board=scratch` | on any call: a separate board for checks (the nightly suite), never mirrored |
 
 Links: URLs, `qws:<sha>` / `apps:<sha>` (commits), `qws:<path>` / `apps:<path>` (files); the board links them to GitHub.
 Limits: title 200, details 4000, comment 2000 characters, 20 links.

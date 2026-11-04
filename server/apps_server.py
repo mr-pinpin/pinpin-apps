@@ -46,7 +46,7 @@
   POST /api/ask                     {app, screen, prompt, system?, json?, model?} -> {text, json?} (assistant, or the stub)
   GET  /proxy?app=<app>&url=<url>   GET through the Mini, only to hosts in the app's permissions.fetch
   GET  /kanban                      the captain's board (ui/kanban.html); GET /api/kanban[/<id>|/md], POST /api/kanban,
-                                    POST /api/kanban/<id>/move|update|comment (token): server/kanban.py, docs/KANBAN.md
+                                    POST /api/kanban/<id>/move|update|comment|delete (token): server/kanban.py, docs/KANBAN.md
 
 Stdlib only. The repo (--repo) is a git checkout of mr-pinpin/pinpin-apps; app data and secrets live in --data.
 """
@@ -496,6 +496,8 @@ class State:
         self.air_seen = 0
         self._ts = (0, None)
         self.kanban = kanban.Board(os.path.join(a.data, 'kanban.json'), atomic_write)
+        # ?board=scratch: a separate board for checks (tools/nightly_health.py), never mirrored or shown
+        self.kanban_scratch = kanban.Board(os.path.join(a.data, 'kanban-scratch.json'), atomic_write)
         self.runner_url = a.runner or ''  # set by the runner's own polls (X-PinPin-Runner) unless given
         if not self.runner_url:  # or a fixed address in <data>/runner-url (until the runner sends the token)
             try:
@@ -1170,8 +1172,11 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     # -- the kanban board (server/kanban.py): reads are open on the LAN, every write needs the token
+    def board(self, q):
+        return self.st.kanban_scratch if q.get('board') == 'scratch' else self.st.kanban
+
     def kanban_get(self, rest, q):
-        b = self.st.kanban
+        b = self.board(q)
         try:
             if rest == []:
                 doc = b.snapshot()
@@ -1192,14 +1197,15 @@ class Handler(BaseHTTPRequestHandler):
     def kanban_post(self, rest, d):
         """POST /api/kanban {title, details?, column?, owner?, area?, links?, by}  -> the new card
            POST /api/kanban/<id>/move {column, note?, by};  .../update {title|details|owner|area|links|add_links, by};
-           .../comment {text, by}"""
+           .../comment {text, by};  .../delete {by} (gone from the board, listed in "deleted").  ?board=scratch: the
+           checks' own board"""
         if not self.authed():
             return
-        b = self.st.kanban
+        b = self.board(dict(urllib.parse.parse_qsl(urllib.parse.urlparse(self.path).query)))
         try:
             if rest == []:
                 return self.send(201, b.add(d))
-            if len(rest) == 2 and rest[1] in ('move', 'update', 'comment'):
+            if len(rest) == 2 and rest[1] in ('move', 'update', 'comment', 'delete'):
                 return self.send(200, getattr(b, rest[1])(rest[0], d))
         except kanban.Invalid as e:
             return self.send(400, {'error': str(e)})
