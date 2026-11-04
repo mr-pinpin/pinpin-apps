@@ -401,6 +401,19 @@ class Apps(unittest.TestCase):
         self.req('POST', '/api/screens/62/open', {'url': None})
         self.assertNotIn(62, {r['screen'] for r in self.req('GET', '/api/screens')[1]})
 
+    def test_create_and_base_guards(self):
+        self.assertEqual(self.req('PUT', '/api/apps/guarded', {'files': self.app('guarded'), 'create': True})[0], 200)
+        st, d, _ = self.req('PUT', '/api/apps/guarded', {'files': self.app('guarded'), 'create': True})
+        self.assertEqual(st, 409); head = d['commit']
+        self.assertEqual(self.req('PUT', '/api/apps/guarded', {'files': {'a.js': '1'}, 'base': head[:10]})[0], 200)
+        st, d, _ = self.req('PUT', '/api/apps/guarded', {'files': {'a.js': '2'}, 'base': head})  # stale base
+        self.assertEqual(st, 409)
+        self.assertEqual(self.req('GET', '/api/apps/guarded')[1]['files']['a.js'], '1')
+
+    def test_authoring_guide(self):
+        st, text, r = self.req('GET', '/api/authoring')
+        self.assertEqual(st, 200); self.assertIn('PUT http://', text)
+
     def test_health(self):
         st, d, _ = self.req('GET', '/health')
         self.assertTrue(d['ok']); self.assertEqual(d['assistant'], 'stub')

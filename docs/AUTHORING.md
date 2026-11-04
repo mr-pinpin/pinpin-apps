@@ -8,9 +8,14 @@ app reload by themselves.
 ```
 PUT http://192.168.0.50:57830/api/apps/<id>
 {"files": {"index.html": "...", "manifest.json": "..."}, "message": "what changed and why", "by": "assistant",
- "check": true, "say": ["a phrase to try"]}
+ "create": true, "check": true, "say": ["a phrase to try"]}
 ```
-- `id`: lowercase letters, digits, `-` and `_`, up to 48 characters. The folder name and `manifest.id` must match.
+- `id`: lowercase letters, digits, `-` and `_`, up to 48 characters, derived from the name (e.g. `kitchen-timer`).
+  The folder name and `manifest.id` must match. `GET /api/apps` lists the ids that are taken.
+- New app: add `"create": true`. If the id is taken you get a 409, so pick another id; never overwrite an app you
+  didn't read.
+- Changing an app: `GET` it first and send its `commit` as `"base"`. If someone changed it meanwhile you get a 409:
+  read it again and re-apply your change.
 - `files` patches the folder; `null` deletes a file. Add `"replace": true` to make `files` the whole app.
 - `check: true` renders the app in headless Chrome (1920x1200) after the commit. The reply then includes
   `check.errors` (JS exceptions and console errors) and `check.text` (what is on screen). `say` speaks those phrases

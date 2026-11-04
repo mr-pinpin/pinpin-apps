@@ -7,7 +7,10 @@
   GET  /events?screen=<id>          server-sent events to the page: reload, voice {text}
   GET  /api/apps                    [{id, name, description, size, permissions, commit}]
   GET  /api/apps/<app>              {manifest, files: {path: text}, commit}
-  PUT  /api/apps/<app>              {files: {path: text|null}, message, replace?, by?, check?, say?} -> one git commit,
+  GET  /api/authoring               docs/AUTHORING.md (how to write an app), for the assistant's context
+  PUT  /api/apps/<app>              {files: {path: text|null}, message, replace?, by?, check?, say?, create?, base?}
+                                    -> one git commit; create: 409 if the id exists; base: 409 unless it is the app's
+                                    current commit (GET returns it), so concurrent edits are never overwritten;
                                     screens reload; check: render it in headless Chrome, report JS errors + text
   DELETE /api/apps/<app>            removes the folder (one commit) and unassigns its screens
   GET  /api/apps/<app>/history      [{commit, when, subject}]
@@ -447,6 +450,8 @@ class Handler(BaseHTTPRequestHandler):
                                        'assistant': st.assistant.name, 'house_rev': (st.house.doc or {}).get('rev')})
             if u.path == '/':
                 return self.index()
+            if u.path == '/api/authoring':  # docs/AUTHORING.md, live, for the assistant's context
+                return self.file(os.path.join(st.repo.root, 'docs', 'AUTHORING.md'))
             if u.path == '/favicon.ico':
                 return self.send(204, body=b'')
             if parts[:1] == ['sdk'] and len(parts) == 2 and not manifest.check_path(parts[1]):
@@ -612,6 +617,11 @@ class Handler(BaseHTTPRequestHandler):
         d = self.json_body()
         if d is None:
             return
+        exists = a in st.repo.ids()
+        if d.get('create') and exists:
+            return self.send(409, {'error': f'app {a} exists; pick another id or drop "create"', 'commit': st.repo.head(a)})
+        if d.get('base') and exists and not st.repo.head(a).startswith(str(d['base'])):
+            return self.send(409, {'error': f'{a} changed since {d["base"]}; GET it again and re-apply', 'commit': st.repo.head(a)})
         try:
             problems, commit, changed = st.repo.write(a, d.get('files'), str(d.get('message', ''))[:200],
                                                      bool(d.get('replace')), str(d.get('by', 'assistant'))[:40])
