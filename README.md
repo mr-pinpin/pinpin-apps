@@ -159,5 +159,6 @@ never committed.
   - Recipes cooking mode (a big step, highlighted ingredients, next/back/repeat/how long, inline timers from the steps).
   - App-to-app messages (a host-mediated inbox on the Mini; permissions.send / accepts) to the shopping list and notes.
 - [x] M17: eval over CDP; Mini cursor watcher (MINI click bug); a shared token on the powerful endpoints, with a logged grace hour
+- [x] M18: the kanban board for the captain and agents: /kanban (desktop + phone), API, `kanban` CLI, git mirror to docs/captain, Doing summary on /status (docs/KANBAN.md)
 - [ ] M9: an app on a real screen: waits for the user to say which screen is the kitchen one
 - [ ] M8: the assistant creates a new app end to end ("make me a timer app") and it appears on a screen. Rehearsed through the API: `apps/timer` was made from docs/AUTHORING.md with `check: true`, rendered with no errors, and its voice worked

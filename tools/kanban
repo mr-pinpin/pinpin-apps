@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""kanban: the captain's board from a shell (the board itself: http://192.168.0.50:57830/kanban on the home LAN).
+
+  kanban list [-c COLUMN] [-o OWNER] [-a AREA] [--all]   cards by column (Done only with --all or -c done)
+  kanban show K3                                         one card: details, links, history, comments
+  kanban add "title" [-d DETAILS] [-o OWNER] [-a AREA] [-c COLUMN] [-l LINK]...
+  kanban move K3 doing [-m "note"]                       columns: backlog next doing review done
+  kanban update K3 [-t TITLE] [-d DETAILS] [-o OWNER] [-a AREA] [-l LINK]... [--set-links]
+  kanban comment K3 "text"
+  kanban md                                              the board as markdown (= docs/captain/KANBAN.md)
+
+Who you are: --by NAME, or $PINPIN_WHO (e.g. work-42). --json prints the raw API answer.
+Transport: on the VPS it goes through `ssh pinpin-mini` (root's key, so it re-runs itself with sudo -n) and the Mini
+reads its own token; elsewhere set PINPIN_KANBAN_URL=http://192.168.0.50:57830 and PINPIN_TOKEN (or a token file).
+"""
+import argparse
+import json
+import os
+import shlex
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+COLUMNS = ['backlog', 'next', 'doing', 'review', 'done']
+
+
+def call(method, path, body=None):
+    """-> (status, parsed JSON or text)"""
+    data = json.dumps(body).encode() if body is not None else None
+    url = os.environ.get('PINPIN_KANBAN_URL', '').rstrip('/')
+    if url:
+        tok = os.environ.get('PINPIN_TOKEN', '')
+        tf = os.path.expanduser(os.environ.get('PINPIN_TOKEN_FILE', '~/.local/share/pinpin-apps/token'))
+        if not tok and os.path.isfile(tf):
+            tok = open(tf).read().strip()
+        req = urllib.request.Request(url + path, data=data, method=method,
+                                     headers={'Content-Type': 'application/json', **({'Authorization': 'Bearer ' + tok} if tok else {})})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                code, raw = r.status, r.read()
+        except urllib.error.HTTPError as e:
+            code, raw = e.code, e.read()
+        except OSError as e:
+            sys.exit(f'kanban: {url} unreachable: {e}')
+    else:
+        if os.geteuid() != 0:  # root holds the ssh key to the Mini
+            os.execvp('sudo', ['sudo', '-n', '--preserve-env=PINPIN_WHO', sys.executable, os.path.abspath(__file__), *sys.argv[1:]])
+        remote = ('curl -sS -m 20 -o /dev/stdout -w "\\n%{http_code}" -X ' + method +
+                  ' -H "Authorization: Bearer $(cat ~/pinpin-apps-data/token)" -H "Content-Type: application/json"' +
+                  (' --data-binary @-' if data is not None else '') + ' ' + shlex.quote('http://127.0.0.1:57830' + path))
+        p = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'pinpin-mini', remote],
+                           input=data or b'', capture_output=True, timeout=40)
+        if p.returncode != 0:
+            sys.exit(f'kanban: the Mini is unreachable: {p.stderr.decode(errors="replace").strip()}')
+        raw, _, code = p.stdout.rpartition(b'\n')
+        code = int(code or 0)
+    try:
+        return code, json.loads(raw)
+    except ValueError:
+        return code, raw.decode(errors='replace')
+
+
+def must(code, d):
+    if code >= 400:
+        sys.exit(f'kanban: HTTP {code}: {d.get("error") if isinstance(d, dict) else d}')
+    return d
+
+
+def line(c):
+    who = ' · '.join(x for x in (c.get('owner'), c.get('area')) if x)
+    return f'  {c["id"]:<6} {c["title"]}' + (f'  [{who}]' if who else '')
+
+
+def show(c):
+    print(f'{c["id"]}  {c["title"]}')
+    print(f'  column {c["column"]} · owner {c["owner"] or "-"} · area {c["area"] or "-"} · created {c["created"]} by {c["by"]} · updated {c["updated"]}')
+    if c['details']:
+        print('\n' + '\n'.join('  ' + l for l in c['details'].splitlines()))
+    if c['links']:
+        print('\n  links:\n' + '\n'.join('    ' + l for l in c['links']))
+    if c['comments']:
+        print('\n  comments:')
+        for m in c['comments']:
+            print(f'    {m["at"]} {m["by"]}: ' + m['text'].replace('\n', '\n      '))
+    print('\n  history:')
+    for h in c['history']:
+        extra = {k: v for k, v in h.items() if k not in ('at', 'by', 'what')}
+        print(f'    {h["at"]} {h["by"]} {h["what"]}' + (' ' + json.dumps(extra, ensure_ascii=False) if extra else ''))
+
+
+def main():
+    ap = argparse.ArgumentParser(prog='kanban', description=__doc__.splitlines()[0], epilog=__doc__.split('\n', 2)[2],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--by', default=os.environ.get('PINPIN_WHO', ''))
+    ap.add_argument('--json', action='store_true')
+    sub = ap.add_subparsers(dest='cmd', required=True)
+    p = sub.add_parser('list'); p.add_argument('-c', '--column'); p.add_argument('-o', '--owner'); p.add_argument('-a', '--area')
+    p.add_argument('--all', action='store_true')
+    p = sub.add_parser('show'); p.add_argument('id')
+    p = sub.add_parser('add'); p.add_argument('title'); p.add_argument('-d', '--details'); p.add_argument('-o', '--owner')
+    p.add_argument('-a', '--area'); p.add_argument('-c', '--column', default='backlog'); p.add_argument('-l', '--link', action='append')
+    p = sub.add_parser('move'); p.add_argument('id'); p.add_argument('column', choices=COLUMNS); p.add_argument('-m', '--note')
+    p = sub.add_parser('update'); p.add_argument('id'); p.add_argument('-t', '--title'); p.add_argument('-d', '--details')
+    p.add_argument('-o', '--owner'); p.add_argument('-a', '--area'); p.add_argument('-l', '--link', action='append')
+    p.add_argument('--set-links', action='store_true', help='replace the links instead of adding')
+    p = sub.add_parser('comment'); p.add_argument('id'); p.add_argument('text')
+    sub.add_parser('md')
+    a = ap.parse_args()
+    by = a.by or 'unknown'
+    q = lambda s: urllib.parse.quote(s, safe='')
+
+    if a.cmd == 'list':
+        qs = '&'.join(f'{k}={q(v)}' for k, v in (('column', a.column), ('owner', a.owner), ('area', a.area)) if v)
+        d = must(*call('GET', '/api/kanban' + ('?' + qs if qs else '')))
+        if a.json:
+            return print(json.dumps(d, indent=1, ensure_ascii=False))
+        for col in COLUMNS:
+            cards = [c for c in d['cards'] if c['column'] == col]
+            if col == 'done' and not (a.all or a.column):
+                print(f'Done ({len(cards)})  (kanban list --all to show)'); continue
+            if cards or not a.column:
+                print(f'{col.capitalize()} ({len(cards)})')
+                for c in cards:
+                    print(line(c))
+        return
+    if a.cmd == 'md':
+        return print(must(*call('GET', '/api/kanban/md')))
+    if a.cmd == 'show':
+        d = must(*call('GET', '/api/kanban/' + q(a.id)))
+    elif a.cmd == 'add':
+        d = must(*call('POST', '/api/kanban', {'title': a.title, 'details': a.details, 'owner': a.owner, 'area': a.area,
+                                               'column': a.column, 'links': a.link, 'by': by}))
+    elif a.cmd == 'move':
+        d = must(*call('POST', f'/api/kanban/{q(a.id)}/move', {'column': a.column, 'note': a.note, 'by': by}))
+    elif a.cmd == 'update':
+        body = {'title': a.title, 'details': a.details, 'owner': a.owner, 'area': a.area, 'by': by}
+        body['links' if a.set_links else 'add_links'] = a.link
+        d = must(*call('POST', f'/api/kanban/{q(a.id)}/update', body))
+    elif a.cmd == 'comment':
+        d = must(*call('POST', f'/api/kanban/{q(a.id)}/comment', {'text': a.text, 'by': by}))
+    if a.json:
+        return print(json.dumps(d, indent=1, ensure_ascii=False))
+    if a.cmd == 'show':
+        show(d)
+    else:
+        print(f'{a.cmd}: {d["id"]} [{d["column"]}] {d["title"]}')
+
+
+if __name__ == '__main__':
+    main()

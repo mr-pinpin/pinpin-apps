@@ -43,6 +43,8 @@
   POST /api/build                   {prompt, app?, screen?} -> the assistant builds/changes an app with its tools (control page)
   POST /api/ask                     {app, screen, prompt, system?, json?, model?} -> {text, json?} (assistant, or the stub)
   GET  /proxy?app=<app>&url=<url>   GET through the Mini, only to hosts in the app's permissions.fetch
+  GET  /kanban                      the captain's board (ui/kanban.html); GET /api/kanban[/<id>|/md], POST /api/kanban,
+                                    POST /api/kanban/<id>/move|update|comment (token): server/kanban.py, docs/KANBAN.md
 
 Stdlib only. The repo (--repo) is a git checkout of mr-pinpin/pinpin-apps; app data and secrets live in --data.
 """
@@ -72,6 +74,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(1, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
 import manifest  # noqa: E402
+import kanban  # noqa: E402
 
 SHA = re.compile(r'^[0-9a-f]{7,40}$')
 MIME = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -461,6 +464,7 @@ class State:
         self.shown = {}
         self.unauth = {}
         self.opens_lock = threading.Lock()
+        self.kanban = kanban.Board(os.path.join(a.data, 'kanban.json'), atomic_write)
         self.runner_url = a.runner or ''  # set by the runner's own polls (X-PinPin-Runner) unless given
         if not self.runner_url:  # or a fixed address in <data>/runner-url (until the runner sends the token)
             try:
@@ -1023,6 +1027,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.file(os.path.join(st.repo.root, 'ui', 'help.html'))
             if u.path in ('/status', '/status/'):
                 return self.file(os.path.join(st.repo.root, 'ui', 'status.html'))
+            if u.path in ('/kanban', '/kanban/'):
+                return self.file(os.path.join(st.repo.root, 'ui', 'kanban.html'))
+            if parts[:2] == ['api', 'kanban']:
+                return self.kanban_get(parts[2:], q)
             if u.path == '/api/status':
                 return self.send(200, self.status())
             if u.path == '/house-plan.svg':  # the house server's floor plan, relayed (phones reach this port only)
@@ -1115,6 +1123,44 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    # -- the kanban board (server/kanban.py): reads are open on the LAN, every write needs the token
+    def kanban_get(self, rest, q):
+        b = self.st.kanban
+        try:
+            if rest == []:
+                doc = b.snapshot()
+                if q.get('since') == str(doc['rev']):
+                    return self.send(200, {'rev': doc['rev'], 'unchanged': True})
+                doc['cards'] = kanban.select(doc, q.get('column'), q.get('owner'), q.get('area'))
+                return self.send(200, doc)
+            if rest == ['md']:
+                return self.send(200, body=kanban.markdown(b.snapshot()).encode(), ctype='text/markdown; charset=utf-8')
+            if len(rest) == 1:
+                return self.send(200, b.get(rest[0]))
+        except kanban.Invalid as e:
+            return self.send(400, {'error': str(e)})
+        except kanban.NotFound as e:
+            return self.send(404, {'error': str(e)})
+        return self.send(404, {'error': 'not found'})
+
+    def kanban_post(self, rest, d):
+        """POST /api/kanban {title, details?, column?, owner?, area?, links?, by}  -> the new card
+           POST /api/kanban/<id>/move {column, note?, by};  .../update {title|details|owner|area|links|add_links, by};
+           .../comment {text, by}"""
+        if not self.authed():
+            return
+        b = self.st.kanban
+        try:
+            if rest == []:
+                return self.send(201, b.add(d))
+            if len(rest) == 2 and rest[1] in ('move', 'update', 'comment'):
+                return self.send(200, getattr(b, rest[1])(rest[0], d))
+        except kanban.Invalid as e:
+            return self.send(400, {'error': str(e)})
+        except kanban.NotFound as e:
+            return self.send(404, {'error': str(e)})
+        return self.send(404, {'error': 'not found'})
+
     def status(self):
         """The morning status page's data: the VPS bundle (tools/status_push.sh), the headset, screens and apps."""
         st = self.st
@@ -1141,7 +1187,7 @@ class Handler(BaseHTTPRequestHandler):
                 except (OSError, ValueError):
                     pass
         return {'now': now(), 'vps': vps, 'headset': st.headset.last, 'screens': self.screen_list(), 'apps': names, 'cursor': cursor,
-                'checks': checks,
+                'checks': checks, 'kanban': st.kanban.summary(),
                 'house_rev': (st.house.doc or {}).get('rev'), 'assistant': st.assistant.name}
 
     def screen_list(self):
@@ -1310,6 +1356,8 @@ class Handler(BaseHTTPRequestHandler):
         d = self.json_body()
         if d is None:
             return
+        if parts[:2] == ['api', 'kanban']:
+            return self.kanban_post(parts[2:], d)
         if parts == ['api', 'ask']:
             if not self.from_host():
                 return

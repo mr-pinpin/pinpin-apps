@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PinPin kanban</title>
+<style>
+  :root { --bg: #0d1117; --card: #161c26; --card2: #1d2532; --line: #2a3342; --fg: #f4f6fa; --muted: #9aa6b8; --accent: #ffb84d; --good: #5fd38d; --bad: #ff6b6b; --cool: #6cb6ff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  a { color: var(--accent); }
+  header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+  h1 { font-size: 24px; margin: 0 8px 0 0; }
+  .sub { color: var(--muted); font-size: 13px; }
+  input, select, textarea, button { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+  textarea { width: 100%; min-height: 90px; resize: vertical; }
+  button { cursor: pointer; background: var(--card2); } button.primary { background: var(--accent); color: #0d1117; border-color: var(--accent); font-weight: 700; }
+  .tabs { display: none; gap: 6px; overflow-x: auto; margin-bottom: 10px; }
+  .tabs button.on { border-color: var(--accent); color: var(--accent); }
+  .board { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; align-items: start; }
+  .col { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px; min-height: 120px; }
+  .col.over { border-color: var(--accent); }
+  .col h2 { font-size: 13px; margin: 2px 4px 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; display: flex; justify-content: space-between; }
+  .col[data-col=doing] h2 { color: var(--accent); } .col[data-col=review] h2 { color: var(--cool); } .col[data-col=done] h2 { color: var(--good); }
+  .k { background: var(--card2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; margin-bottom: 8px; cursor: pointer; }
+  .k:hover { border-color: var(--muted); }
+  .k .t { font-weight: 600; } .k .m { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; font-size: 12px; color: var(--muted); align-items: center; }
+  .chip { background: #0007; border-radius: 99px; padding: 1px 8px; font-size: 12px; } .chip.owner { color: var(--cool); }
+  .id { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  dialog { background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 14px; width: min(720px, 100vw - 24px); max-height: calc(100vh - 24px); padding: 18px; }
+  dialog::backdrop { background: #000a; }
+  dialog h3 { margin: 0 0 4px; font-size: 21px; } dialog h4 { margin: 16px 0 6px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
+  .details { white-space: pre-wrap; }
+  .moves { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; } .moves button.on { border-color: var(--accent); color: var(--accent); }
+  .hist, .com { font-size: 14px; } .hist div, .com div { padding: 3px 0; border-bottom: 1px solid var(--line); } .hist .when, .com .when { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .com .txt { white-space: pre-wrap; }
+  .form { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; } .form .full { grid-column: 1 / -1; } .form label { font-size: 13px; color: var(--muted); display: grid; gap: 3px; }
+  .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; flex-wrap: wrap; }
+  #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--accent); color: #0d1117; padding: 8px 16px; border-radius: 10px; font-weight: 700; display: none; z-index: 9; }
+  @media (max-width: 900px) {
+    body { padding: 12px; }
+    .tabs { display: flex; }
+    .board { grid-template-columns: 1fr; }
+    .col { display: none; } .col.show { display: block; }
+    .form { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Kanban</h1>
+  <button class="primary" id="addBtn">+ Card</button>
+  <select id="fOwner"><option value="">all owners</option></select>
+  <select id="fArea"><option value="">all areas</option></select>
+  <input id="fText" placeholder="search" size="12">
+  <span class="sub" id="meta"></span>
+  <span class="sub"><a href="/status">status</a> · <a href="/api/kanban/md">markdown</a></span>
+</header>
+<nav class="tabs" id="tabs"></nav>
+<main class="board" id="board"></main>
+
+<dialog id="dlg"></dialog>
+<div id="toast"></div>
+
+<script>
+'use strict';
+const COLS = [['backlog', 'Backlog'], ['next', 'Next'], ['doing', 'Doing'], ['review', 'Review'], ['done', 'Done']];
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let board = { rev: -1, cards: [] }, tab = store('pinpin-kanban-tab') || 'doing', openId = null;
+
+function store(k, v) {
+  try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; }
+}
+function ago(iso) {
+  if (!iso) return '';
+  const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' d ago';
+}
+const utc = (iso) => esc(String(iso || '').replace('T', ' ').replace('Z', ' UTC'));
+function toast(t) { const e = $('toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => (e.style.display = 'none'), 2500); }
+function link(l) {
+  let m;
+  if (/^https?:\/\//.test(l)) return `<a href="${esc(l)}" target="_blank" rel="noopener">${esc(l)}</a>`;
+  if ((m = l.match(/^(qws|apps):([0-9a-f]{7,40})$/))) return `<a href="https://github.com/mr-pinpin/${m[1] === 'qws' ? 'quest-wall-screen' : 'pinpin-apps'}/commit/${m[2]}" target="_blank" rel="noopener">${esc(l)}</a>`;
+  if ((m = l.match(/^(qws|apps):([\w./-]+)$/))) return `<a href="https://github.com/mr-pinpin/${m[1] === 'qws' ? 'quest-wall-screen' : 'pinpin-apps'}/blob/main/${esc(m[2])}" target="_blank" rel="noopener">${esc(l)}</a>`;
+  return esc(l);
+}
+
+// writes need the household token (the same one the apps page keeps in this browser)
+async function write(path, body) {
+  body.by = store('pinpin-who') || 'user';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (store('pinpin-token') || '') }, body: JSON.stringify(body) });
+    if (r.status !== 401 || attempt) {
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { toast('Not saved: ' + (d.error || r.status)); return null; }
+      await load(true);
+      return d;
+    }
+    const t = prompt('Changing the board needs the PinPin apps token (the agents know it). It is kept in this browser.');
+    if (!t) return null;
+    store('pinpin-token', t.trim());
+  }
+}
+
+async function load(force) {
+  try {
+    const r = await fetch('/api/kanban' + (force ? '' : '?since=' + board.rev), { cache: 'no-store' });
+    const d = await r.json();
+    if (d.unchanged) return;
+    board = d;
+    draw();
+    if (openId && $('dlg').open && !$('dlg').querySelector('.editing')) show(openId);
+  } catch (e) { $('meta').textContent = 'the Mini is not answering'; }
+}
+
+function filtered() {
+  const o = $('fOwner').value, a = $('fArea').value, t = $('fText').value.trim().toLowerCase();
+  return board.cards.filter((c) => (!o || c.owner === o) && (!a || c.area === a) &&
+    (!t || (c.id + ' ' + c.title + ' ' + c.details).toLowerCase().includes(t)));
+}
+function options(sel, vals) {
+  const cur = sel.value, first = sel.options[0].outerHTML;
+  sel.innerHTML = first + [...new Set(vals.filter(Boolean))].sort().map((v) => `<option>${esc(v)}</option>`).join('');
+  sel.value = cur;
+}
+
+function draw() {
+  options($('fOwner'), board.cards.map((c) => c.owner));
+  options($('fArea'), board.cards.map((c) => c.area));
+  const cards = filtered();
+  $('meta').textContent = `${board.cards.length} cards · rev ${board.rev} · updated ${ago(board.updated)}`;
+  $('tabs').innerHTML = COLS.map(([k, n]) => `<button data-tab="${k}" class="${k === tab ? 'on' : ''}">${n} ${cards.filter((c) => c.column === k).length}</button>`).join('');
+  $('board').innerHTML = COLS.map(([k, n]) => {
+    let list = cards.filter((c) => c.column === k);
+    if (k === 'done') list = list.sort((a, b) => b.updated.localeCompare(a.updated));
+    return `<section class="col ${k === tab ? 'show' : ''}" data-col="${k}"><h2><span>${n}</span><span>${list.length}</span></h2>` +
+      list.map((c) => `<div class="k" draggable="true" data-id="${esc(c.id)}"><div class="t">${esc(c.title)}</div><div class="m"><span class="id">${esc(c.id)}</span>` +
+        (c.owner ? `<span class="chip owner">${esc(c.owner)}</span>` : '') + (c.area ? `<span class="chip">${esc(c.area)}</span>` : '') +
+        (c.comments.length ? `<span>💬 ${c.comments.length}</span>` : '') + `<span title="${utc(c.updated)}">${ago(c.updated)}</span></div></div>`).join('') + '</section>';
+  }).join('');
+}
+
+function show(id) {
+  const c = board.cards.find((x) => x.id === id);
+  if (!c) return;
+  openId = id;
+  const d = $('dlg');
+  d.innerHTML = `<div class="id">${esc(c.id)} · created ${utc(c.created)} by ${esc(c.by)} · updated <span title="${utc(c.updated)}">${ago(c.updated)}</span></div>
+    <h3>${esc(c.title)}</h3>
+    <div class="sub">owner <b>${esc(c.owner || '–')}</b> · area <b>${esc(c.area || '–')}</b></div>
+    <div class="moves">${COLS.map(([k, n]) => `<button data-move="${k}" class="${k === c.column ? 'on' : ''}">${n}</button>`).join('')}</div>
+    ${c.details ? `<h4>Details</h4><div class="details">${esc(c.details)}</div>` : ''}
+    ${c.links.length ? `<h4>Links</h4><div>${c.links.map(link).join('<br>')}</div>` : ''}
+    <h4>Comments</h4><div class="com">${c.comments.map((m) => `<div><span class="when" title="${utc(m.at)}">${ago(m.at)}</span> <b>${esc(m.by)}</b>: <span class="txt">${esc(m.text)}</span></div>`).join('') || '<span class="sub">none yet</span>'}</div>
+    <form id="cform" style="margin-top:8px"><textarea name="text" placeholder="add a comment" style="min-height:60px"></textarea><div class="row"><button>Comment</button></div></form>
+    <details><summary class="sub" style="cursor:pointer;margin-top:10px">History (${c.history.length})</summary><div class="hist">${c.history.slice().reverse().map((h) =>
+      `<div><span class="when">${utc(h.at)}</span> <b>${esc(h.by)}</b> ${esc(h.what)}${h.from ? ` ${esc(h.from)} → ${esc(h.to)}` : ''}${h.fields ? ': ' + esc(h.fields.join(', ')) : ''}${h.note ? ` — ${esc(h.note)}` : ''}</div>`).join('')}</div></details>
+    <div class="row"><button id="editBtn">Edit</button><button id="closeBtn">Close</button></div>`;
+  d.querySelector('#closeBtn').onclick = () => d.close();
+  d.querySelector('#editBtn').onclick = () => edit(c);
+  d.querySelectorAll('[data-move]').forEach((b) => (b.onclick = () => write(`/api/kanban/${c.id}/move`, { column: b.dataset.move })));
+  d.querySelector('#cform').onsubmit = async (e) => {
+    e.preventDefault();
+    const text = e.target.text.value.trim();
+    if (text && await write(`/api/kanban/${c.id}/comment`, { text })) toast('Comment added');
+  };
+  if (!d.open) d.showModal();
+}
+
+function edit(c) {
+  const d = $('dlg'), isNew = !c;
+  c = c || { title: '', details: '', owner: '', area: '', links: [], column: tab };
+  d.innerHTML = `<h3>${isNew ? 'New card' : 'Edit ' + esc(c.id)}</h3><form class="form editing" id="eform">
+    <label class="full">Title<input name="title" required maxlength="200" value="${esc(c.title)}"></label>
+    <label>Owner (agent)<input name="owner" list="owners" maxlength="40" value="${esc(c.owner)}"></label>
+    <label>Area<input name="area" list="areas" maxlength="40" value="${esc(c.area)}"></label>
+    ${isNew ? `<label>Column<select name="column">${COLS.map(([k, n]) => `<option value="${k}" ${k === c.column ? 'selected' : ''}>${n}</option>`).join('')}</select></label>` : ''}
+    <label class="full">Details<textarea name="details" maxlength="4000">${esc(c.details)}</textarea></label>
+    <label class="full">Links, one per line (URLs, qws:&lt;sha&gt;, apps:&lt;sha&gt;, qws:docs/…)<textarea name="links" style="min-height:60px">${esc(c.links.join('\n'))}</textarea></label>
+    <div class="row full"><button type="button" id="cancel">Cancel</button><button class="primary">${isNew ? 'Add' : 'Save'}</button></div></form>
+    <datalist id="owners">${[...new Set(board.cards.map((x) => x.owner).filter(Boolean))].map((o) => `<option value="${esc(o)}">`).join('')}</datalist>
+    <datalist id="areas">${[...new Set(board.cards.map((x) => x.area).filter(Boolean))].map((o) => `<option value="${esc(o)}">`).join('')}</datalist>`;
+  d.querySelector('#cancel').onclick = () => (isNew ? d.close() : show(c.id));
+  d.querySelector('#eform').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target, body = { title: f.title.value, owner: f.owner.value, area: f.area.value, details: f.details.value,
+      links: f.links.value.split('\n').map((x) => x.trim()).filter(Boolean) };
+    if (isNew) body.column = f.column.value;
+    const r = await write(isNew ? '/api/kanban' : `/api/kanban/${c.id}/update`, body);
+    if (r) { toast(isNew ? r.id + ' added' : 'Saved'); show(r.id); }
+  };
+  if (!d.open) d.showModal();
+}
+
+$('board').addEventListener('click', (e) => { const k = e.target.closest('.k'); if (k) show(k.dataset.id); });
+$('tabs').addEventListener('click', (e) => { const b = e.target.closest('[data-tab]'); if (b) { tab = b.dataset.tab; store('pinpin-kanban-tab', tab); draw(); } });
+$('addBtn').onclick = () => edit(null);
+['fOwner', 'fArea', 'fText'].forEach((id) => $(id).addEventListener('input', draw));
+$('dlg').addEventListener('close', () => { openId = null; });
+// drag a card to another column (desktop)
+$('board').addEventListener('dragstart', (e) => { const k = e.target.closest('.k'); if (k) e.dataTransfer.setData('text/plain', k.dataset.id); });
+$('board').addEventListener('dragover', (e) => { const col = e.target.closest('.col'); if (col) { e.preventDefault(); col.classList.add('over'); } });
+$('board').addEventListener('dragleave', (e) => { const col = e.target.closest('.col'); if (col) col.classList.remove('over'); });
+$('board').addEventListener('drop', (e) => {
+  const col = e.target.closest('.col'); if (!col) return;
+  e.preventDefault(); col.classList.remove('over');
+  const id = e.dataTransfer.getData('text/plain'), c = board.cards.find((x) => x.id === id);
+  if (c && c.column !== col.dataset.col) write(`/api/kanban/${id}/move`, { column: col.dataset.col });
+});
+if (!store('pinpin-who')) store('pinpin-who', 'user');
+load(true);
+setInterval(load, 5000);
+</script>
+</body>
+</html>

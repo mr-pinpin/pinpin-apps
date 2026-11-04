@@ -75,7 +75,7 @@ def fresh_docs():
     return DOCS if os.path.isdir(DOCS) else QWS
 
 
-SKIP = re.compile(r'^(captain: (log|ticks)|house: mirror rev|Merge |(test|e2e|probe|zz)-[\w-]*: )', re.I)  # routine + test apps
+SKIP = re.compile(r'^(captain: (log|ticks|kanban mirror)|house: mirror rev|Merge |(test|e2e|probe|zz)-[\w-]*: )', re.I)  # routine + test apps
 
 
 def area(repo_name, subject, files):

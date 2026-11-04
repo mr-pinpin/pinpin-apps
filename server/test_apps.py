@@ -798,6 +798,78 @@ class Apps(unittest.TestCase):
         finally:
             os.remove(tp); self.st.runner_url = ''
 
+    def test_kanban(self):
+        J = {'Content-Type': 'application/json'}
+        st, c, _ = self.req('POST', '/api/kanban', {'title': ' Pointer STEADY flag ', 'owner': 'c4', 'area': 'headset', 'column': 'next',
+                                                     'links': ['qws:d5a9376'], 'details': 'dead zone + smoothing', 'by': 'work-df'}, headers=J)
+        self.assertEqual(st, 201, c); self.assertRegex(c['id'], r'^K\d+$')
+        self.assertEqual((c['title'], c['column'], c['by']), ('Pointer STEADY flag', 'next', 'work-df'))
+        k = c['id']
+        self.assertEqual(self.req('POST', f'/api/kanban/{k}/move', {'column': 'Doing', 'note': 'started', 'by': 'work-c4'}, headers=J)[1]['column'], 'doing')
+        u = self.req('POST', f'/api/kanban/{k}/update', {'owner': 'work-c4', 'add_links': ['qws:d5a9376', 'https://x.example/a'], 'by': 'work-c4'}, headers=J)[1]
+        self.assertEqual(u['links'], ['qws:d5a9376', 'https://x.example/a']); self.assertEqual(u['owner'], 'work-c4')
+        cm = self.req('POST', f'/api/kanban/{k.lower()}/comment', {'text': 'v0.56 ships it', 'by': 'work-c4'}, headers=J)[1]
+        self.assertEqual(cm['comments'][-1]['text'], 'v0.56 ships it')
+        self.assertEqual([h['what'] for h in cm['history']], ['created', 'moved', 'updated', 'commented'])
+        self.assertEqual(cm['history'][1]['from'], 'next'); self.assertEqual(cm['history'][2]['old_owner'], 'c4')
+        # reads: filters, unchanged since rev, one card, markdown, /status summary
+        b = self.req('GET', '/api/kanban?column=doing&owner=WORK-C4')[1]
+        self.assertIn(k, [x['id'] for x in b['cards']])
+        self.assertTrue(self.req('GET', f'/api/kanban?since={b["rev"]}')[1]['unchanged'])
+        self.assertEqual(self.req('GET', f'/api/kanban/{k}')[1]['id'], k)
+        st, md, r = self.req('GET', '/api/kanban/md')
+        self.assertEqual(st, 200); self.assertIn(f'**{k}** Pointer STEADY flag (work-c4, headset)', md)
+        summ = self.req('GET', '/api/status')[1]['kanban']
+        self.assertIn(k, [x['id'] for x in summ['doing']]); self.assertGreaterEqual(summ['counts']['doing'], 1)
+        self.assertEqual(self.req('GET', '/kanban')[0], 200)
+        # refused: bad column, empty title, unknown card, too long, not JSON, app frames
+        self.assertEqual(self.req('POST', f'/api/kanban/{k}/move', {'column': 'later'}, headers=J)[0], 400)
+        self.assertEqual(self.req('POST', '/api/kanban', {'title': '  '}, headers=J)[0], 400)
+        self.assertEqual(self.req('POST', '/api/kanban/K99999/comment', {'text': 'x'}, headers=J)[0], 404)
+        self.assertEqual(self.req('POST', '/api/kanban', {'title': 'x' * 201}, headers=J)[0], 400)
+        self.assertEqual(self.req('POST', '/api/kanban', {'title': 'x', 'links': 'a b'.split() * 11}, headers=J)[0], 400)
+        self.assertEqual(self.req('POST', '/api/kanban', b'title=x', headers={'Content-Type': 'application/x-www-form-urlencoded'})[0], 415)
+        self.assertEqual(self.req('POST', '/api/kanban', {'title': 'x'}, headers={**J, 'Origin': 'null'})[0], 403)
+        # the file survives a restart, and a broken file falls back to the previous copy
+        path = os.path.join(self.st.data, 'kanban.json')
+        self.assertEqual(apps_server.kanban.Board(path, apps_server.atomic_write).get(k)['owner'], 'work-c4')
+        b2 = apps_server.kanban.Board(path + '.copy', apps_server.atomic_write)
+        b2.add({'title': 'one'}); b2.add({'title': 'two'})
+        with open(path + '.copy', 'w') as f:
+            f.write('{"torn')
+        self.assertEqual([c['title'] for c in apps_server.kanban.Board(path + '.copy', apps_server.atomic_write).doc['cards']], ['one'])
+
+    def test_kanban_token_and_cli(self):
+        tok = 'test-token-kanban-0123'
+        tp, ap = os.path.join(self.st.data, 'token'), os.path.join(self.st.data, 'auth.json')
+        with open(tp, 'w') as f:
+            f.write(tok + '\n')
+        with open(ap, 'w') as f:
+            json.dump({'enforce_after': time.time() - 1}, f)
+        try:
+            J = {'Content-Type': 'application/json'}
+            self.assertEqual(self.req('POST', '/api/kanban', {'title': 'x'}, headers=J)[0], 401)
+            self.assertEqual(self.req('GET', '/api/kanban')[0], 200)  # reading stays open on the LAN
+            env = {**os.environ, 'PINPIN_KANBAN_URL': f'http://127.0.0.1:{self.port}', 'PINPIN_TOKEN': tok, 'PINPIN_WHO': 'work-test'}
+            cli = lambda *a: subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'kanban'), *a], env=env, capture_output=True, text=True, timeout=30)
+            r = cli('add', 'Dictation server queue', '-o', '42', '-a', 'assistant', '-c', 'next', '-l', 'qws:docs/captain/KANBAN.md')
+            self.assertEqual(r.returncode, 0, r.stderr); k = r.stdout.split()[1]
+            self.assertEqual(cli('move', k, 'review', '-m', 'ready').returncode, 0)
+            self.assertEqual(cli('comment', k, 'please check').returncode, 0)
+            self.assertEqual(cli('update', k, '-o', 'work-42').returncode, 0)
+            r = cli('show', k)
+            self.assertIn('owner work-42', r.stdout); self.assertIn('work-test: please check', r.stdout); self.assertIn('moved', r.stdout)
+            r = cli('list', '-c', 'review')
+            self.assertIn(k, r.stdout)
+            self.assertIn('Dictation server queue', cli('md').stdout)
+            r = cli('move', k, 'nowhere')
+            self.assertNotEqual(r.returncode, 0)
+            r = subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'kanban'), 'add', 'x'], capture_output=True, text=True, timeout=30,
+                               env={**env, 'PINPIN_TOKEN': 'wrong', 'PINPIN_TOKEN_FILE': '/nonexistent'})
+            self.assertIn('HTTP 401', r.stderr)
+        finally:
+            os.remove(tp); os.remove(ap)
+
     def test_authoring_guide(self):
         st, text, r = self.req('GET', '/api/authoring')
         self.assertEqual(st, 200); self.assertIn('PUT http://', text)

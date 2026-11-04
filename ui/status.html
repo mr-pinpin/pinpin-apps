@@ -48,6 +48,10 @@
 <h2>Needs you</h2>
 <div class="card morning" id="morning"><div class="sub">…</div></div>
 
+<h2>Kanban</h2>
+<div class="card" id="kanban"><div class="sub">…</div></div>
+<div class="sub" style="margin-top:6px"><a href="/kanban">Open the board →</a></div>
+
 <h2>Checks</h2>
 <div class="card" id="checks"><div class="sub">No checks reported yet.</div></div>
 
@@ -164,6 +168,14 @@ function activity(lines) {
   }).join('\n');
 }
 
+function kanban(k) {  // Doing and Review cards from the board (/kanban), recent Done ones ticked
+  if (!k) return;
+  const n = k.counts || {}, li = (c, cls) => `<li class="${cls}"><code>${esc(c.id)}</code> ${esc(c.title)}${c.owner ? ' <span class="sub">· ' + esc(c.owner) + '</span>' : ''}</li>`;
+  const part = (t, list, cls) => list.length ? `<h3 style="margin:8px 0 4px;font-size:16px">${t}</h3><ul class="check">${list.map((c) => li(c, cls)).join('')}</ul>` : '';
+  $('kanban').innerHTML = `<div class="sub">${['backlog', 'next', 'doing', 'review', 'done'].map((c) => `${c} ${n[c] || 0}`).join(' · ')}</div>` +
+    (part('Doing', k.doing || [], '') + part('Review', k.review || [], '') + part('Done lately', k.done || [], 'done') || '<p class="sub">Nothing in progress.</p>');
+}
+
 async function load() {
   let d;
   try { d = await (await fetch('/api/status', { cache: 'no-store' })).json(); } catch (e) { $('meta').innerHTML = '<span class="stale">The Mini is not answering.</span>'; return; }
@@ -177,6 +189,7 @@ async function load() {
     <div class="sub">${since(c.at)}${c.link ? ' · ' + esc(c.link) : ''}</div></div>
     <div class="${c.ok === true ? 'good' : c.ok === false ? 'bad' : ''}" style="text-align:right">${c.ok === true ? '✓ ' : c.ok === false ? '✗ ' : ''}${esc(c.text)}</div></div>`).join('');
   screens(d.screens || [], d.apps || {});
+  kanban(d.kanban);
   if (v) {
     const secs = sections(v.roadmap || '');
     const morning = secs.find((s) => /morning list/i.test(s.title));
