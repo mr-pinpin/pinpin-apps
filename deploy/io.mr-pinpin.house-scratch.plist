@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The SCRATCH house server on the Mini (:57801, data ~/pinpin-house-scratch): the same code as the live house
+     (io.mr-pinpin.house, :57800, ~/pinpin-house-server), for tests and the nightly health suite. This LaunchAgent is its
+     only owner: never start it by hand. Install: deploy/install-house-scratch.sh (pinpin-apps). -->
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>io.mr-pinpin.house-scratch</string>
+	<key>ProgramArguments</key>
+	<array><string>/bin/sh</string><string>-c</string><string>exec /opt/homebrew/bin/python3 "$HOME/pinpin-house-server/server.py" --data "$HOME/pinpin-house-scratch" --port 57801</string></array>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><true/>
+	<key>ThrottleInterval</key><integer>5</integer>
+	<key>StandardOutPath</key><string>/tmp/pinpin-house-scratch.log</string>
+	<key>StandardErrorPath</key><string>/tmp/pinpin-house-scratch.log</string>
+</dict>
+</plist>
