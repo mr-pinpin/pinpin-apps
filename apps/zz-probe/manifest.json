@@ -1,0 +1,8 @@
+{
+ "id": "zz-probe",
+ "name": "Sandbox probe",
+ "description": "A hostile test app: tries everything an app must not be able to do and reports. Hidden from the catalog; run tools/sandbox_probe.sh.",
+ "hidden": true,
+ "version": 1,
+ "permissions": {"fetch": ["192.168.0.50:57800", "127.0.0.1:57800", "api.open-meteo.com"], "voice": false, "ask": false, "storage": true}
+}

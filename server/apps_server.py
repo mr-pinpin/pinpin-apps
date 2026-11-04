@@ -643,6 +643,8 @@ class Handler(BaseHTTPRequestHandler):
                 out = []
                 for i in st.repo.ids():
                     m = st.repo.manifest(i) or {}
+                    if m.get('hidden') and 'all' not in q:  # test apps (zz-probe) stay out of pickers
+                        continue
                     out.append({'id': i, 'name': m.get('name'), 'description': m.get('description'), 'size': m.get('size'),
                                 'permissions': m.get('permissions'), 'screens': st.screens_showing(i),
                                 'icon': icon_data_uri(st.repo, i, m), 'icon_png': f'/api/apps/{i}/icon.png',

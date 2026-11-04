@@ -1,0 +1,33 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Sandbox probe</title>
+<style> #out { font-size: 0.55rem; line-height: 1.25; white-space: pre; } </style></head>
+<body><h1 id="sum">probing…</h1><div id="out"></div>
+<script>
+// Every probe must be BLOCKED. A probe that gets through is a hole in the sandbox.
+const res = [];
+function line(name, blocked, how) { res.push([name, blocked]); document.getElementById('out').textContent += (blocked ? 'BLOCKED ' : 'OPEN    ') + name + ' (' + how + ')\n'; }
+async function probe(name, fn) {
+  try { const how = await fn(); line(name, false, how || 'worked'); } catch (e) { line(name, true, String(e && e.message || e).slice(0, 60)); }
+}
+const timeout = (p, ms) => Promise.race([p, new Promise((_, r) => setTimeout(() => r(new Error('timeout')), ms))]);
+const img = (src) => new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok('loaded'); i.onerror = () => bad(new Error('error')); i.src = src; });
+(async () => {
+  await probe('localStorage', () => { localStorage.setItem('x', '1'); return 'wrote localStorage'; });
+  await probe('cookies', () => { document.cookie = 'x=1'; if (!document.cookie.includes('x=1')) throw new Error('no cookie jar'); });
+  await probe('parent DOM', () => parent.document.title);
+  await probe('same-server API (another app\'s data)', () => timeout(fetch('/api/apps/recipes/data').then((r) => r.text()), 3000));
+  await probe('API write (assign a screen)', () => timeout(fetch('/api/screens/47/app', { method: 'POST', body: '{"app":"zz-probe"}' }).then((r) => 'status ' + r.status), 3000));
+  await probe('house server on loopback', () => timeout(fetch('http://127.0.0.1:57800/house', { mode: 'no-cors' }), 3000));
+  await probe('house server on the LAN', () => timeout(fetch('http://192.168.0.50:57800/house', { mode: 'no-cors' }), 3000));
+  await probe('LAN image beacon', () => timeout(img('http://192.168.0.50:57830/api/apps/zz-probe/icon.png?beacon=1'), 3000));
+  await probe('internet image beacon', () => timeout(img('https://api.open-meteo.com/favicon.ico'), 3000));
+  await probe('WebSocket to the LAN', () => timeout(new Promise((ok, bad) => { const w = new WebSocket('ws://192.168.0.50:57830/'); w.onopen = () => ok('open'); w.onerror = () => bad(new Error('error')); }), 3000));
+  await probe('proxy to a listed LAN host', async () => { const r = await pinpin.fetch('http://192.168.0.50:57800/house'); if (!r.ok) throw new Error('HTTP ' + r.status); return 'HTTP ' + r.status; });
+  await probe('proxy to a listed loopback host', async () => { const r = await pinpin.fetch('http://127.0.0.1:57800/house'); if (!r.ok) throw new Error('HTTP ' + r.status); return 'HTTP ' + r.status; });
+  await probe('proxy to an unlisted host', async () => { const r = await pinpin.fetch('https://example.com/'); if (!r.ok) throw new Error('HTTP ' + r.status); return 'HTTP ' + r.status; });
+  await probe('ask without permission', async () => { const r = await pinpin.ask('hi'); if (r.error || r.stub) throw new Error(r.error || 'stub'); return 'answered'; });
+  await probe('top navigation', () => { top.location.href = 'https://example.com/'; return 'navigated?'; });
+  const open = res.filter((r) => !r[1]).length;
+  document.getElementById('sum').textContent = open ? `${open} OPEN of ${res.length}` : `ALL BLOCKED (${res.length})`;
+})();
+</script></body></html>

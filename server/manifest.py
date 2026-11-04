@@ -66,6 +66,8 @@ def validate(m, app_id):
                 e.append(f'permissions.{k}: not a boolean')
     if 'icon' in m and not (isinstance(m['icon'], str) and not check_path(m['icon']) and m['icon'].lower().endswith(('.svg', '.png'))):
         e.append('icon: a .svg or .png file in the app folder, e.g. "icon.svg" (square, readable at 64 px)')
+    if 'hidden' in m and not isinstance(m['hidden'], bool):
+        e.append('hidden: not a boolean')
     if 'config' in m and not isinstance(m['config'], dict):
         e.append('config: not an object')
     return e

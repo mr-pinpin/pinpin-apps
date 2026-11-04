@@ -182,6 +182,8 @@ class Apps(unittest.TestCase):
         st, apps, _ = self.req('GET', '/api/apps')
         self.assertEqual(st, 200)
         self.assertTrue({'weather', 'recipes'} <= {a['id'] for a in apps})
+        self.assertNotIn('zz-probe', {a['id'] for a in apps})  # hidden test app
+        self.assertIn('zz-probe', {a['id'] for a in self.req('GET', '/api/apps?all=1')[1]})
 
     def test_preview_shell_and_sandboxed_frame(self):
         st, html, r = self.req('GET', '/app/weather/')
