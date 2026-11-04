@@ -769,7 +769,12 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError):
             vps = None
         names = {i: (st.repo.manifest(i) or {}).get('name', i) for i in st.repo.ids()}
-        return {'now': now(), 'vps': vps, 'headset': st.headset.last, 'screens': self.screen_list(), 'apps': names,
+        try:  # tools/cursor_watch.py: when the Mini's cursor left the streamed display (the MINI click bug)
+            with open(os.path.join(st.data, 'cursor-watch.log'), errors='replace') as f:
+                cursor = [l.rstrip() for l in f.readlines()[-6:]]
+        except OSError:
+            cursor = []
+        return {'now': now(), 'vps': vps, 'headset': st.headset.last, 'screens': self.screen_list(), 'apps': names, 'cursor': cursor,
                 'house_rev': (st.house.doc or {}).get('rev'), 'assistant': st.assistant.name}
 
     def screen_list(self):

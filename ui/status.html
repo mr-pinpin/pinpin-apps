@@ -55,6 +55,10 @@
 <h2>House plan</h2>
 <div class="plan"><img id="plan" alt="Floor plan from the house server"></div>
 
+<h2>MINI screen cursor</h2>
+<div class="card log" id="cursor"></div>
+<div class="sub" style="margin-top:6px">When the Mini's cursor leaves the streamed display, clicks from the MINI screen land elsewhere; this names who moved it.</div>
+
 <h2>Last activity</h2>
 <div class="card log" id="log"></div>
 
@@ -144,6 +148,8 @@ async function load() {
     bench(v); activity(v.activity || []);
   }
   $('plan').src = '/house-plan.svg?rev=' + (d.house_rev || 0);
+  const cur = (d.cursor || []).filter((l) => !/START/.test(l));
+  $('cursor').textContent = cur.length ? cur.slice().reverse().join('\n') : 'Nothing yet: the cursor has stayed on the streamed display.';
 }
 load(); setInterval(load, 30000);
 </script>
