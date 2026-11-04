@@ -213,6 +213,7 @@ class Repo:
 class House:
     def __init__(self, url, cache_path, by='apps'):
         self.url, self.cache_path, self.by = url.rstrip('/'), cache_path, by
+        self.scratch_path = os.path.join(os.path.dirname(cache_path), 'scratch-apps.json')
         self.doc = None
         try:
             with open(cache_path) as f:
@@ -228,16 +229,38 @@ class House:
             atomic_write(self.cache_path, json.dumps(doc))
         return doc
 
+    # scratch screen ids (tests, the assistant's spare displays): their app lives in <data>/scratch-apps.json, never in
+    # the real house.json, so no test can change the user's house (work-df, 2026-11-04)
+    SCRATCH = range(40, 100)
+
+    def scratch(self):
+        try:
+            with open(self.scratch_path) as f:
+                return {int(k): v for k, v in json.load(f).items()}
+        except (OSError, ValueError):
+            return {}
+
     def mapping(self, doc=None):
         doc = doc if doc is not None else self.doc
-        return {a['screen']: a['app'] for a in (doc or {}).get('apps', [])
-                if isinstance(a, dict) and isinstance(a.get('screen'), int) and isinstance(a.get('app'), str)}
+        m = {a['screen']: a['app'] for a in (doc or {}).get('apps', [])
+             if isinstance(a, dict) and isinstance(a.get('screen'), int) and isinstance(a.get('app'), str)}
+        m.update(self.scratch())
+        return m
 
     def screens(self):
         return [s for s in (self.doc or {}).get('screens', []) if isinstance(s, dict)]
 
     def assign(self, screen, app_id, tries=5):
-        """Sets (app_id) or clears (None) the screen's app. Read-modify-write with If-Match; retries on 409."""
+        """Sets (app_id) or clears (None) the screen's app. Read-modify-write with If-Match; retries on 409.
+        Scratch screens (SCRATCH) are kept locally and never reach house.json."""
+        if screen in self.SCRATCH:
+            m = self.scratch()
+            if app_id:
+                m[screen] = app_id
+            else:
+                m.pop(screen, None)
+            atomic_write(self.scratch_path, json.dumps({str(k): v for k, v in m.items()}))
+            return (self.doc or {}).get('rev')
         for _ in range(tries):
             doc = self.fetch()
             apps = [a for a in doc.get('apps', []) if not (isinstance(a, dict) and a.get('screen') == screen)]

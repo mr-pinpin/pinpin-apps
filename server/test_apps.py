@@ -662,6 +662,18 @@ class Apps(unittest.TestCase):
         os.remove(path); os.remove(path + '.1')
         self.assertEqual(self.req('GET', '/api/apps/notes/data')[1], {})
 
+    def test_scratch_screens_never_touch_the_house(self):
+        hp = self.house.server_address[1]
+        before = json.loads(urlget(f'http://127.0.0.1:{hp}/house'))
+        self.assertEqual(self.req('POST', '/api/screens/47/app', {'app': 'weather'})[0], 200)
+        self.assertEqual({r['screen']: r['app'] for r in self.req('GET', '/api/screens')[1]}[47], 'weather')
+        self.assertIn('data-app="weather"', self.req('GET', '/screen/47')[1])
+        after = json.loads(urlget(f'http://127.0.0.1:{hp}/house'))
+        self.assertEqual((after['rev'], after.get('apps')), (before['rev'], before.get('apps')))  # untouched
+        self.req('POST', '/api/screens/47/app', {'app': None})
+        self.assertNotIn(47, {r['screen'] for r in self.req('GET', '/api/screens')[1]})
+        self.assertEqual(json.loads(urlget(f'http://127.0.0.1:{hp}/house'))['rev'], before['rev'])
+
     def test_authoring_guide(self):
         st, text, r = self.req('GET', '/api/authoring')
         self.assertEqual(st, 200); self.assertIn('PUT http://', text)
