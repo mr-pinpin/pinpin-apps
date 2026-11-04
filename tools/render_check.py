@@ -43,6 +43,8 @@ class WS:
         self.buf = buf.split(b'\r\n\r\n', 1)[1]
         self.id = 0
         self.events = []
+        self.sessions = []
+        self.fail = []
 
     def _recv(self, n):
         while len(self.buf) < n:
@@ -64,10 +66,13 @@ class WS:
             if b1 & 0x80:
                 return json.loads(data)
 
-    def send(self, method, params=None, wait=True):
+    def send(self, method, params=None, wait=True, session=None):
         self.id += 1
         mine = self.id  # event() may send while we wait, which moves self.id
-        msg = json.dumps({'id': mine, 'method': method, 'params': params or {}}).encode()
+        msg = {'id': mine, 'method': method, 'params': params or {}}
+        if session:
+            msg['sessionId'] = session  # a child target (the app's out-of-process iframe), flat protocol
+        msg = json.dumps(msg).encode()
         mask = os.urandom(4)
         n = len(msg)
         hdr = bytes([0x81]) + (bytes([0x80 | n]) if n < 126 else bytes([0x80 | 126]) + struct.pack('>H', n) if n < 65536
@@ -94,8 +99,16 @@ class WS:
 
     def event(self, m):
         self.events.append(m)
+        if m.get('method') == 'Target.attachedToTarget':  # the sandboxed app frame runs in its own process
+            sid = m['params']['sessionId']
+            self.sessions.append(sid)
+            for meth in ('Runtime.enable', 'Log.enable', 'Runtime.runIfWaitingForDebugger'):
+                self.send(meth, wait=False, session=sid)
+            if self.fail:
+                self.send('Fetch.enable', {'patterns': [{'urlPattern': x} for x in self.fail]}, wait=False, session=sid)
         if m.get('method') == 'Fetch.requestPaused':  # --fail: this request "loses the network"
-            self.send('Fetch.failRequest', {'requestId': m['params']['requestId'], 'errorReason': 'InternetDisconnected'}, wait=False)
+            self.send('Fetch.failRequest', {'requestId': m['params']['requestId'], 'errorReason': 'InternetDisconnected'},
+                      wait=False, session=m.get('sessionId'))
 
 
 def main():
@@ -129,25 +142,22 @@ def main():
         ws = WS(page['webSocketDebuggerUrl'])
         ws.send('Runtime.enable'); ws.send('Page.enable'); ws.send('Log.enable')
         ws.send('Emulation.setDeviceMetricsOverride', {'width': w, 'height': h, 'deviceScaleFactor': 1, 'mobile': False})
+        ws.fail = a.fail
         if a.fail:
             ws.send('Fetch.enable', {'patterns': [{'urlPattern': x} for x in a.fail]})
+        ws.send('Target.setAutoAttach', {'autoAttach': True, 'waitForDebuggerOnStart': True, 'flatten': True})
         top = ws.send('Page.navigate', {'url': a.url}).get('frameId')
         ws.pump(a.wait)
         for t in a.say:
             ws.send('Runtime.evaluate', {'expression': f'(window.pinpinHost || window.pinpin) && (window.pinpinHost ? pinpinHost.voice : pinpin._voice)({json.dumps(t)}, {{check: true}})'})
             ws.pump(a.wait)
-        # the visible text: the top page's plus every frame's (apps run in a sandboxed iframe)
+        # the visible text: the top page's plus every frame's (apps run in a sandboxed, out-of-process iframe)
         texts = []
-        ctxs = [e['params']['context'] for e in ws.events if e.get('method') == 'Runtime.executionContextCreated']
-        dead = {e['params']['executionContextId'] for e in ws.events if e.get('method') == 'Runtime.executionContextDestroyed'}
-        for c in ctxs:
-            aux = c.get('auxData', {})
-            if c['id'] in dead or not aux.get('isDefault'):
-                continue
-            r = ws.send('Runtime.evaluate', {'expression': 'document.body ? document.body.innerText : ""', 'returnByValue': True, 'contextId': c['id']})
+        for sid in [None] + ws.sessions:
+            r = ws.send('Runtime.evaluate', {'expression': 'document.body ? document.body.innerText : ""', 'returnByValue': True}, session=sid)
             v = ((r or {}).get('result') or {}).get('value')
             if v:
-                texts.append(v) if aux.get('frameId') != top else texts.insert(0, v)
+                texts.append(v)
         text = '\n'.join(texts)
         if a.shot:
             shot = ws.send('Page.captureScreenshot', {'format': 'png'})
@@ -166,8 +176,10 @@ def main():
                     errors.append(line)
             elif m == 'Log.entryAdded' and pr['entry']['level'] == 'error' and 'favicon.ico' not in pr['entry'].get('url', ''):
                 errors.append(pr['entry']['text'] + ' ' + pr['entry'].get('url', ''))
+        failed = [x for x in errors if 'ERR_INTERNET_DISCONNECTED' in x] if a.fail else []  # the ones we caused
+        errors = [x for x in errors if x not in failed]
         missing = [x for x in a.expect if x not in text]
-        print(json.dumps({'url': a.url, 'errors': errors, 'console': console[-20:], 'missing': missing, 'text': text[:1500]}, indent=1, ensure_ascii=False))
+        print(json.dumps({'url': a.url, 'errors': errors, 'failed_on_purpose': len(failed), 'console': console[-20:], 'missing': missing, 'text': text[:1500]}, indent=1, ensure_ascii=False))
         sys.exit(1 if errors or missing else 0)
     finally:
         p.terminate()
