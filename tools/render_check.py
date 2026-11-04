@@ -130,7 +130,10 @@ def main():
                 d = pr['exceptionDetails']
                 errors.append((d.get('exception') or {}).get('description') or d.get('text'))
             elif m == 'Runtime.consoleAPICalled':
-                console.append(pr['type'] + ': ' + ' '.join(str(x.get('value', x.get('description', ''))) for x in pr['args']))
+                line = ' '.join(str(x.get('value', x.get('description', ''))) for x in pr['args'])
+                console.append(pr['type'] + ': ' + line)
+                if pr['type'] == 'error':  # the SDK catches errors in voice handlers and logs them
+                    errors.append(line)
             elif m == 'Log.entryAdded' and pr['entry']['level'] == 'error' and 'favicon.ico' not in pr['entry'].get('url', ''):
                 errors.append(pr['entry']['text'] + ' ' + pr['entry'].get('url', ''))
         missing = [x for x in a.expect if x not in text]
