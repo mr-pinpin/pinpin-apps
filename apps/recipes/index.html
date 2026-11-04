@@ -56,7 +56,7 @@ function single(w) {
 function norm(s) {
   s = s.toLowerCase().replace(/[^a-z\s-]/g, ' ').replace(/\s+/g, ' ').trim();
   for (let k = 0; k < 4; k++) s = s.replace(NUM, '').replace(UNIT, '');
-  if (!s || /^(and|or|with|also|too|please|thanks?)$/.test(s)) return '';
+  if (!s || /^(and|or|with|also|too|please|thanks?|thank you|wait|hmm+|ok(ay)?|yes|yeah|no|stop|hello|hi|hey|claude|let me see|that'?s it|nothing)$/.test(s)) return '';
   const words = s.split(' '); words[words.length - 1] = single(words[words.length - 1]);
   s = words.join(' ');
   return SYN[s] || s;
