@@ -10,7 +10,7 @@
 //   pinpin.ask(prompt, {system, json})  -> {text, json?, stub?}: Claude via the assistant (permissions.ask)
 //   pinpin.toast(text, ms)          a big transient message;  pinpin.status(text)  the small corner line
 //   pinpin.fit(el, {max, min})      shrink an element's font until it fits its box (long titles on small screens)
-// Dev: add ?dev=1 to the URL for a text box that feeds onVoice, to try an app without the headset.
+// Dev: ?dev=1 adds a text box that feeds onVoice (try an app without the headset); ?say=a|b|c scripts phrases.
 (function () {
   'use strict';
   const me = document.currentScript;
@@ -114,8 +114,12 @@
     P.config = Object.assign({}, P.manifest.config || {}, P.store.get('config', {}));
     if (document.readyState === 'loading') await new Promise((r) => document.addEventListener('DOMContentLoaded', r));
     dotEl = el('pp-dot pp-off');
-    if (new URLSearchParams(location.search).has('dev')) devBox();
+    const qs = new URLSearchParams(location.search);
+    if (qs.has('dev')) devBox();
     connect();
+    if (qs.has('say')) {  // scripted voice for render checks: ?say=eggs, tomatoes|recipe 2|next (one phrase per 1.5 s)
+      qs.get('say').split('|').forEach((t, i) => setTimeout(() => voice(t, { scripted: true }), 800 + i * 1500));
+    }
     return P;
   })();
 })();
