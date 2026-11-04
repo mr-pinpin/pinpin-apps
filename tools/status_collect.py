@@ -109,6 +109,37 @@ def overnight():
     return out
 
 
+AIR_NET = r"""
+echo "ip=$(ipconfig getifaddr en0)"
+system_profiler SPAirPortDataType 2>/dev/null | awk '/Current Network Information:/{getline; sub(/^ */, ""); sub(/:$/, ""); print "ssid=" $0; exit}'
+/usr/local/bin/tailscale status --json 2>/dev/null | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin); e=d.get("ExitNodeStatus") or {}; n=[p.get("HostName") for p in (d.get("Peer") or {}).values() if p.get("ExitNode")]; print("ts=" + json.dumps({"up": d.get("BackendState") == "Running", "state": d.get("BackendState"), "ip": ((d.get("Self") or {}).get("TailscaleIPs") or [None])[0], "exit_node": n[0] if n else None, "exit_online": bool(e.get("Online"))}))'
+"""
+
+
+def air_network():
+    """The laptop's Wi-Fi network and Tailscale, read over ssh (Tailscale): read-only, a few seconds. Unreachable is
+    itself the signal (Tailscale off, or the laptop asleep)."""
+    out = {'checked': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
+    try:
+        p = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', 'pinpin-air', 'bash -s'], input=AIR_NET,
+                           capture_output=True, text=True, timeout=40)
+    except subprocess.TimeoutExpired:
+        return dict(out, reachable=False, error='ssh timed out')
+    if p.returncode != 0 and 'ip=' not in p.stdout:
+        return dict(out, reachable=False, error=(p.stderr.strip().splitlines() or ['ssh failed'])[-1][:160])
+    out['reachable'] = True
+    for line in p.stdout.splitlines():
+        k, _, v = line.partition('=')
+        if k == 'ts':
+            try:
+                out['tailscale'] = json.loads(v)
+            except ValueError:
+                pass
+        elif k in ('ip', 'ssid'):
+            out[k] = v.strip() or None
+    return out
+
+
 def main():
     docs = fresh_docs()
     activity = read(os.path.join(QWS, 'bench/activity.log')).splitlines()
@@ -125,6 +156,7 @@ def main():
         'owner': read(os.path.join(QWS, 'bench/headset_owner')).strip(),
         'qws_head': head,
         'flags': flags(),
+        'air_network': air_network(),
     }
     json.dump(doc, sys.stdout, ensure_ascii=False)
 

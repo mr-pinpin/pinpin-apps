@@ -138,7 +138,7 @@ never committed.
   - air_smoke passes at 50 fps.
   Finding: Chrome started over ssh can't reach the GUI session, so the runner must be the Aqua LaunchAgent.
 - [x] M5b: `POST /api/screens/<id>/open {url}` for the assistant's open_url (one runner for apps and web pages, navigated over CDP)
-- [x] M6: /api/ask forwarded to work-42's assistant (now the Air instance, 192.168.0.102:57840; the Mini instance when it's up). Recipes answered by Claude in 15–30 s, with built-in ideas shown at once
+- [x] M6: /api/ask forwarded to work-42's assistant (now the Air instance: `<data>/assistant-url` is `http://{air}:57840/api/ask`, {air} = the address the laptop runner last checked in from; the Mini instance when it is up). Recipes answered by Claude in 15–30 s, with built-in ideas shown at once
 - [ ] M7: headset dictation to an app screen (`/say`): work-c4 is adding an app-mic button beside the Claude button (ASSIST flag)
 - [x] M10: catalog for the headset's app picker: icons (SVG data URI, plus a PNG rendered on the Mini), commit per app; protocol in docs/HEADSET.md (sent to work-c4)
 - [x] M11: more starter apps: shopping list, clock (sunrise/sunset), notes board. Each passed the render check with scripted voice
@@ -160,5 +160,6 @@ never committed.
   - App-to-app messages (a host-mediated inbox on the Mini; permissions.send / accepts) to the shopping list and notes.
 - [x] M17: eval over CDP; Mini cursor watcher (MINI click bug); a shared token on the powerful endpoints, with a logged grace hour
 - [x] M18: the kanban board for the captain and agents: /kanban (desktop + phone), API, `kanban` CLI, git mirror to docs/captain, Doing summary on /status (docs/KANBAN.md)
+- [x] M19: no hard-coded laptop address (the runner check-in is the source, cached in <data>/air-ip; assistant-url takes {air}); a Network check on /status: laptop Wi-Fi (RT-5WiFi-EDA0 or red), Tailscale, exit node, addresses, headset Wi-Fi, Mini Tailscale
 - [x] M9: an app on a real screen: recipes on screen 3, the kitchen screen the user named (2026-11-04 10:45 UTC)
 - [ ] M8: the assistant creates a new app end to end ("make me a timer app") and it appears on a screen. Rehearsed through the API: `apps/timer` was made from docs/AUTHORING.md with `check: true`, rendered with no errors, and its voice worked

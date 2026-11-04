@@ -798,6 +798,36 @@ class Apps(unittest.TestCase):
         finally:
             os.remove(tp); self.st.runner_url = ''
 
+    def test_laptop_address_follows_the_runner(self):
+        st = self.st
+        old, st.air_ip = st.air_ip, '192.168.0.102'
+        try:
+            self.req('GET', '/api/screens', headers={'X-PinPin-Runner': '8080'})  # no token: not the laptop
+            self.assertEqual(st.air_ip, '127.0.0.1')  # (no token configured in this test: any runner counts)
+            with open(os.path.join(st.data, 'air-ip')) as f:
+                self.assertEqual(f.read().strip(), '127.0.0.1')
+            saved, st._assistant = st._assistant, None
+            with open(os.path.join(st.data, 'assistant-url'), 'w') as f:
+                f.write('http://{air}:57840/api/ask\n')
+            self.assertEqual(st.assistant.name, 'http://127.0.0.1:57840/api/ask')
+            st.air_ip = ''
+            self.assertEqual(st.assistant.name, 'http://Miguels-MacBook-Air.local:57840/api/ask')
+            st._assistant = saved
+            os.remove(os.path.join(st.data, 'assistant-url'))
+            n = self.req('GET', '/api/status')[1]['network']
+            self.assertEqual(n['expect']['air_ssid'], ['RT-5WiFi-EDA0']); self.assertIn('headset_ssid', n)
+            # tailscale --json, summarised
+            cli = os.path.join(st.data, 'fake-tailscale')
+            with open(cli, 'w') as f:
+                f.write('#!/bin/sh\necho \'{"BackendState": "Running", "Self": {"TailscaleIPs": ["100.1.2.3"]}, '
+                        '"ExitNodeStatus": {"Online": true}, "Peer": {"k": {"HostName": "hostinger-vps", "ExitNode": true}}}\'\n')
+            os.chmod(cli, 0o755)
+            self.assertEqual(apps_server.tailscale_summary(cli), {'up': True, 'state': 'Running', 'ip': '100.1.2.3',
+                                                                  'exit_node': 'hostinger-vps', 'exit_online': True})
+            self.assertIsNone(apps_server.tailscale_summary('/nonexistent'))
+        finally:
+            st.air_ip = old
+
     def test_kanban(self):
         J = {'Content-Type': 'application/json'}
         st, c, _ = self.req('POST', '/api/kanban', {'title': ' Pointer STEADY flag ', 'owner': 'c4', 'area': 'headset', 'column': 'next',

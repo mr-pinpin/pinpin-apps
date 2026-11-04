@@ -52,6 +52,9 @@
 <div class="card" id="kanban"><div class="sub">…</div></div>
 <div class="sub" style="margin-top:6px"><a href="/kanban">Open the board →</a></div>
 
+<h2>Network</h2>
+<div class="card" id="network"><div class="sub">…</div></div>
+
 <h2>Checks</h2>
 <div class="card" id="checks"><div class="sub">No checks reported yet.</div></div>
 
@@ -168,6 +171,32 @@ function activity(lines) {
   }).join('\n');
 }
 
+function network(n, a) {  // n: the Mini's view (/api/status), a: the laptop read over ssh by the VPS (vps.air_network)
+  n = n || {}; const ex = n.expect || { air_ssid: ['RT-5WiFi-EDA0'], headset_ssid: [] };
+  const row = (k, v, cls, note) => `<div class="scr"><div><b>${k}</b>${note ? `<div class="sub">${note}</div>` : ''}</div><div class="${cls || ''}" style="text-align:right">${v}</div></div>`;
+  const ok = (b) => (b ? 'good' : 'bad'), mark = (b) => (b ? '✓ ' : '✗ ');
+  const ts = (t, who) => !t ? row(who + ' Tailscale', 'unknown', '') :
+    row(who + ' Tailscale', mark(t.up) + (t.up ? 'up' : 'DOWN (' + esc(t.state || '?') + ')') + (t.ip ? ' · ' + esc(t.ip) : ''), ok(t.up));
+  let h = '';
+  if (a && a.reachable) {
+    const good = ex.air_ssid.includes(a.ssid);
+    h += row('Laptop Wi-Fi', mark(good) + esc(a.ssid || 'not on Wi-Fi'), ok(good), good ? '' : 'should be ' + esc(ex.air_ssid.join(' or ')));
+    const t = a.tailscale;
+    h += ts(t, 'Laptop');
+    if (t) h += row('Laptop exit node', t.exit_node ? mark(t.exit_online) + esc(t.exit_node) + (t.exit_online ? ' (on)' : ' (offline)') : '✗ off',
+      t.exit_node && t.exit_online ? 'good' : 'warn', 'Meta and WhatsApp need it');
+  } else {
+    h += row('Laptop', '✗ not reachable over Tailscale', 'bad', a ? esc(a.error || '') + ' · Tailscale off, or the laptop asleep' : 'no reading from the VPS yet');
+  }
+  const ips = [n.air_ip, a && a.ip].filter(Boolean);
+  h += row('Laptop address', esc([...new Set(ips)].join(' / ') || 'unknown'), ips.length === 2 && ips[0] !== ips[1] ? 'warn' : '',
+    n.air_seen_s != null ? 'apps runner checked in ' + ago(n.air_seen_s) + ' ago' : 'the apps runner has not checked in since the Mini started');
+  const hs = n.headset_ssid, hgood = !ex.headset_ssid.length || ex.headset_ssid.includes(hs);
+  h += row('Headset Wi-Fi', (hs ? (ex.headset_ssid.length ? mark(hgood) : '') + esc(hs) : 'unknown'), hs && ex.headset_ssid.length ? ok(hgood) : '');
+  h += ts(n.mini_tailscale, 'Mini');
+  $('network').innerHTML = h + (a && a.checked ? `<div class="sub" style="margin-top:6px">Laptop read ${since(a.checked)}.</div>` : '');
+}
+
 function kanban(k) {  // Doing and Review cards from the board (/kanban), recent Done ones ticked
   if (!k) return;
   const n = k.counts || {}, li = (c, cls) => `<li class="${cls}"><code>${esc(c.id)}</code> ${esc(c.title)}${c.owner ? ' <span class="sub">· ' + esc(c.owner) + '</span>' : ''}</li>`;
@@ -190,6 +219,7 @@ async function load() {
     <div class="${c.ok === true ? 'good' : c.ok === false ? 'bad' : ''}" style="text-align:right">${c.ok === true ? '✓ ' : c.ok === false ? '✗ ' : ''}${esc(c.text)}</div></div>`).join('');
   screens(d.screens || [], d.apps || {});
   kanban(d.kanban);
+  network(d.network, v && v.air_network);
   if (v) {
     const secs = sections(v.roadmap || '');
     const morning = secs.find((s) => /morning list/i.test(s.title));

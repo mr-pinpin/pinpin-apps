@@ -87,6 +87,8 @@ MAX_BODY = 12 << 20
 MAX_STORE = 256 << 10
 MAX_PROXY = 5 << 20
 PROXY_TTL = 60
+AIR_MDNS = 'Miguels-MacBook-Air.local'
+TAILSCALE = '/usr/local/bin/tailscale'
 AUTHOR = ['-c', 'user.name=Mr. PinPin', '-c', 'user.email=miguelemosreverte@gmail.com']
 
 
@@ -111,6 +113,21 @@ def atomic_write(path, data):
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def tailscale_summary(cli):
+    """{up, state, ip, exit_node, exit_online} from `tailscale status --json`; None without the CLI."""
+    if not os.path.exists(cli):
+        return None
+    try:
+        d = json.loads(subprocess.run([cli, 'status', '--json'], capture_output=True, text=True, timeout=10).stdout or '{}')
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        return {'up': False, 'state': f'error: {e}'[:80]}
+    ex = d.get('ExitNodeStatus') or None
+    name = next((p.get('HostName') for p in (d.get('Peer') or {}).values() if p.get('ExitNode')), None)
+    return {'up': d.get('BackendState') == 'Running', 'state': d.get('BackendState'),
+            'ip': ((d.get('Self') or {}).get('TailscaleIPs') or [None])[0],
+            'exit_node': name, 'exit_online': bool(ex and ex.get('Online'))}
 
 
 def now():
@@ -365,6 +382,8 @@ class Headset:
             m = re.search(r'State: (\w+)', info); out['vr'] = m.group(1) if m else None  # MOUNTED (worn) / STANDBY / ...
             m = re.search(r'level: (\d+)', info); out['battery'] = int(m.group(1)) if m else None
             out['charging'] = 'powered: true' in info
+            m = re.search(r'mWifiInfo SSID: "?([^",]*)"?,', self.sh("dumpsys wifi | grep -m1 'mWifiInfo SSID'"))
+            out['ssid'] = m.group(1) if m else None
             try:
                 st = json.loads(self.sh(f'run-as {self.PKG} cat files/status.json') or '{}')
             except ValueError:
@@ -466,6 +485,16 @@ class State:
         self.shown = {}
         self.unauth = {}
         self.opens_lock = threading.Lock()
+        # the laptop's address: whatever its runner checks in from (it changes: DHCP, MAC rotation), cached in
+        # <data>/air-ip; mDNS (AIR_MDNS) only before the first check-in, as it can keep answering an old address
+        self.air_ip_path = os.path.join(a.data, 'air-ip')
+        try:
+            with open(self.air_ip_path) as f:
+                self.air_ip = f.readline().strip()
+        except OSError:
+            self.air_ip = ''
+        self.air_seen = 0
+        self._ts = (0, None)
         self.kanban = kanban.Board(os.path.join(a.data, 'kanban.json'), atomic_write)
         self.runner_url = a.runner or ''  # set by the runner's own polls (X-PinPin-Runner) unless given
         if not self.runner_url:  # or a fixed address in <data>/runner-url (until the runner sends the token)
@@ -557,7 +586,21 @@ class State:
                     url = f.readline().strip()
             except OSError:
                 url = ''
-        return make_assistant(url)
+        return make_assistant(url.replace('{air}', self.air_ip or AIR_MDNS))
+
+    def note_air(self, ip):
+        """The runner checked in from ip (authenticated): the laptop's current LAN address."""
+        self.air_seen = time.time()
+        if ip != self.air_ip:
+            log(f'laptop address {self.air_ip or "?"} -> {ip}')
+            self.air_ip = ip
+            atomic_write(self.air_ip_path, ip + '\n')
+
+    def tailscale(self):
+        """This Mac's Tailscale, from its CLI, at most once a minute."""
+        if time.time() - self._ts[0] > 60:
+            self._ts = (time.time(), tailscale_summary(TAILSCALE))
+        return self._ts[1]
 
     @assistant.setter
     def assistant(self, v):
@@ -1120,6 +1163,7 @@ class Handler(BaseHTTPRequestHandler):
                     # the laptop runner polls with its input port: that's where input (and the token) goes. Only an
                     # authenticated runner may set it, or any LAN device could redirect input and collect the token.
                     st.runner_url = f'http://{self.client_address[0]}:{int(rp)}'
+                    st.note_air(self.client_address[0])
                 return self.send(200, self.screen_list())
             return self.send(404, {'error': 'not found'})
         except (BrokenPipeError, ConnectionResetError):
@@ -1190,7 +1234,20 @@ class Handler(BaseHTTPRequestHandler):
                     pass
         return {'now': now(), 'vps': vps, 'headset': st.headset.last, 'screens': self.screen_list(), 'apps': names, 'cursor': cursor,
                 'checks': checks, 'kanban': st.kanban.summary(),
+                'network': {'air_ip': st.air_ip or None, 'air_seen_s': round(time.time() - st.air_seen) if st.air_seen else None,
+                            'mini_tailscale': st.tailscale(), 'headset_ssid': (st.headset.last or {}).get('ssid'),
+                            'expect': self.network_expect()},
                 'house_rev': (st.house.doc or {}).get('rev'), 'assistant': st.assistant.name}
+
+    def network_expect(self):
+        """<data>/network.json overrides: {"air_ssid": ..., "headset_ssid": [...]}."""
+        e = {'air_ssid': ['RT-5WiFi-EDA0'], 'headset_ssid': []}
+        try:
+            with open(os.path.join(self.st.data, 'network.json')) as f:
+                e.update({k: v if isinstance(v, list) else [v] for k, v in json.load(f).items() if k in e})
+        except (OSError, ValueError):
+            pass
+        return e
 
     def screen_list(self):
         st = self.st
