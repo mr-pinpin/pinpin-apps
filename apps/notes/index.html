@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Notes board</title>
 <style>
-  #board { display: grid; grid-template-columns: repeat(3, 1fr); grid-auto-rows: 1fr; gap: 0.45rem; }
+  #board { display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); gap: 0.45rem; }
   .note { border-radius: 0.25rem; padding: 0.35rem 0.45rem; color: #1b1b1b; display: flex; flex-direction: column; min-height: 0; overflow: hidden;
           box-shadow: 0 0.1rem 0.3rem #0008; }
   .note .n { font-size: 0.6rem; font-weight: 800; opacity: 0.55; display: flex; justify-content: space-between; }
@@ -32,7 +32,7 @@ function render() {
   const max = pinpin.config.max_notes || 9;
   $('count').textContent = notes.length > max ? `${notes.length - max} older not shown` : '';
   $('board').innerHTML = notes.length ? notes.slice(0, max).map((n, i) =>
-    `<div class="note c${n.id % 5}${n.id === freshId ? ' fresh' : ''}"><div class="n"><span>${i + 1}</span><span>${ago(n.at)}</span></div><div class="t">${pinpin.escape(n.t)}</div></div>`).join('')
+    `<div class="note c${(n.c ?? n.id) % 5}${n.id === freshId ? ' fresh' : ''}"><div class="n"><span>${i + 1}</span><span>${ago(n.at)}</span></div><div class="t">${pinpin.escape(n.t)}</div></div>`).join('')
     : '<div class="empty">No notes yet. Say “note: buy batteries”.</div>';
   document.querySelectorAll('.note .t').forEach((e) => pinpin.fit(e, { max: 1, min: 0.5 }));
 }
@@ -53,11 +53,11 @@ pinpin.onVoice((text) => {
     if (k < 0) return pinpin.toast('No note about “' + m[1] + '”');
     notes.splice(k, 1); save(); return render();
   }
-  t = t.replace(/^(?:new note|note|add a note|add note|write|remember|reminder|remind me to)\s*[:,-]?\s*/i, '');
+  t = t.replace(/^(?:new note|add a note|add note|note|write down|write|remember to|remember that|remember|reminder to|reminder|remind me to)\s*[:,-]?\s*/i, '');
   if (!t) return pinpin.toast('Say “note: …”');
   t = t.charAt(0).toUpperCase() + t.slice(1);
   freshId = Date.now();
-  notes.unshift({ id: freshId, t: t.slice(0, 200), at: Date.now() });
+  notes.unshift({ id: freshId, c: notes.length ? ((notes[0].c ?? 0) + 1) % 5 : 0, t: t.slice(0, 200), at: Date.now() });
   save(); render();
 });
 
