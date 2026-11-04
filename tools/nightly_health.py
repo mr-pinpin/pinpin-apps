@@ -30,13 +30,13 @@ SSH = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'pinpin-mini']
 BACKUP = os.environ.get('PINPIN_DATA_BACKUP', '/root/backups/pinpin-apps-data')
 APPS = [('weather', ['--wait', '5'], ''), ('recipes', ['--wait', '2.5', '--fail', '*/api/ask*', '--say', 'eggs and tomatoes'], ''),
         ('shopping', ['--wait', '2', '--say', 'add milk'], 'milk'), ('clock', ['--wait', '3'], ''),
-        ('notes', ['--wait', '2', '--say', 'note: nightly check'], 'nightly check'), ('timer', ['--wait', '2', '--say', '2 minutes'], '')]
+        ('notes', ['--wait', '2', '--say', 'note: nightly check'], 'Nightly check'), ('timer', ['--wait', '2', '--say', '2 minutes'], '')]
 
 
 def mini(script, timeout=300):
     """Run a bash script on the Mini; -> (rc, stdout+stderr)."""
     try:
-        p = subprocess.run(SSH + ['bash -s'], input=script, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(SSH + ['bash -s'], input='export LC_ALL=C LANG=C\n' + script, capture_output=True, text=True, timeout=timeout)
         return p.returncode, (p.stdout + p.stderr).strip()
     except subprocess.TimeoutExpired:
         return 124, 'timed out'
@@ -49,7 +49,7 @@ def api(method, path, body=None, base='http://127.0.0.1:57830', headers=''):
               f'-H "Authorization: Bearer $(cat ~/pinpin-apps-data/token)" -H "Content-Type: application/json" {headers} '
               + (f"--data-binary @- " if body is not None else '') + f"'{base}{path}'" + '; echo; cat /tmp/pp-nh.out')
     try:
-        p = subprocess.run(SSH + [script], input=data, capture_output=True, text=True, timeout=60)
+        p = subprocess.run(SSH + ['LC_ALL=C ' + script], input=data, capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired:
         return 0, 'timed out'
     code, _, out = p.stdout.partition('\n')
@@ -88,8 +88,8 @@ curl -s -m10 -D h0 -o d0.json $B/house || { echo "FAIL scratch house not answeri
 R=$(awk 'tolower($1)=="x-house-rev:"{print $2+0}' h0)
 sha() { shasum -a 256 "$1" | cut -d" " -f1; }
 put() { curl -s -m10 -o "$3" -w "%%{http_code}" -X PUT -H "If-Match: $1" -H "X-House-SHA256: $(sha $2)" -H "Content-Type: application/json" --data-binary @"$2" $B/house; }
-python3 -c "import json; d=json.load(open('d0.json')); d['by']='nightly'; d.setdefault('settings', {})['nightly']='$(date -u +%%FT%%TZ)'; json.dump(d, open('d1.json','w'))"
-c1=$(put $R d1.json p1.out); [ "$c1" = 200 ] || { echo "FAIL put: $c1 $(head -c 200 p1.out)"; exit 1; }
+python3 -c "import json; d=json.load(open('d0.json')); d['by']='test'; d.setdefault('settings', {})['nightly']='$(date -u +%%FT%%TZ)'; json.dump(d, open('d1.json','w'))"
+c1=$(put $R d1.json p1.out); [ "$c1" = 200 ] || { echo "FAIL put: $c1 $(tr -s ' \\n' ' ' < p1.out | head -c 200)"; exit 1; }
 c2=$(put $R d1.json p2.out); [ "$c2" = 409 ] || { echo "FAIL stale put answered $c2, not 409"; exit 1; }
 tc=$(curl -s -m10 -o t.out -w "%%{http_code}" -X POST "$B/house/tag?rev=$R&name=nightly-$(date -u +%%Y%%m%%d%%H%%M)")
 R1=$((R+1))
