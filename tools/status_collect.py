@@ -113,8 +113,10 @@ AIR_NET = r"""
 echo "ip=$(ipconfig getifaddr en0)"
 system_profiler SPAirPortDataType 2>/dev/null | awk '/Current Network Information:/{getline; sub(/^ */, ""); sub(/:$/, ""); print "ssid=" $0; exit}'
 cs() { ps -o time= -p "$(pgrep -x colorsyncd),$(pgrep -f colorsync.displayservices | head -1)" 2>/dev/null | awk -F'[:.]' '{ s += (NF==4 ? $1*3600+$2*60+$3+$4/100 : $1*60+$2+$3/100) } END { print s }'; }
-c0=$(cs); (log stream --style compact --predicate 'process BEGINSWITH "colorsync" AND eventMessage CONTAINS "XPC_DISPLAY_INFO_REQUEST"' > /tmp/pp-cs.log 2>/dev/null & echo $! > /tmp/pp-cs.pid); sleep 10; kill "$(cat /tmp/pp-cs.pid)" 2>/dev/null; c1=$(cs)
-echo "cs={\"cpu\": $(echo "$c0 $c1" | awk '{printf "%.0f", ($2-$1)*10}'), \"req_per_min\": $(( $(grep -c XPC_DISPLAY_INFO_REQUEST /tmp/pp-cs.log) * 6 ))}"
+L=$(mktemp -t pp-cs); c0=$(cs); t0=$(date +%s)
+log stream --style compact --predicate 'process BEGINSWITH "colorsync" AND eventMessage CONTAINS "XPC_DISPLAY_INFO_REQUEST"' > "$L" 2>/dev/null & LP=$!
+sleep 10; kill $LP 2>/dev/null; wait $LP 2>/dev/null; c1=$(cs); t1=$(date +%s)
+echo "cs={\"cpu\": $(echo "$c0 $c1 $t0 $t1" | awk '{printf "%.0f", ($2-$1)*100/($4-$3)}'), \"req_per_min\": $(( $(grep -c XPC_DISPLAY_INFO_REQUEST "$L") * 60 / (t1 - t0) ))}"; mv "$L" /tmp/pp-cs.last.log
 /usr/local/bin/tailscale status --json 2>/dev/null | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin); e=d.get("ExitNodeStatus") or {}; n=[p.get("HostName") for p in (d.get("Peer") or {}).values() if p.get("ExitNode")]; print("ts=" + json.dumps({"up": d.get("BackendState") == "Running", "state": d.get("BackendState"), "ip": ((d.get("Self") or {}).get("TailscaleIPs") or [None])[0], "exit_node": n[0] if n else None, "exit_online": bool(e.get("Online"))}))'
 """
 
