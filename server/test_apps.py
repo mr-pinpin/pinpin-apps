@@ -112,7 +112,7 @@ class Apps(unittest.TestCase):
         with open(os.path.join(data, 'secrets.json'), 'w') as f:
             json.dump({'127.0.0.1': {'headers': {'X-Key': 'sekret'}}}, f)
         a = apps_server.main_args(['--repo', repo, '--data', data, '--port', '0', '--bind', '127.0.0.1', '--poll', '0.3',
-                                   '--house', f'http://127.0.0.1:{cls.house.server_address[1]}', '--io-timeout', '1'])
+                                   '--house', f'http://127.0.0.1:{cls.house.server_address[1]}', '--io-timeout', '1', '--headset-poll', '0'])
         cls.srv, cls.st = apps_server.serve(a)
         bg(cls.srv)
         cls.port = cls.srv.server_address[1]
@@ -539,6 +539,20 @@ class Apps(unittest.TestCase):
             self.assertEqual(self.req('POST', '/api/build', {'prompt': ''})[0], 400)
         finally:
             self.st.assistant = None; srv.shutdown(); srv.server_close()
+
+    def test_status(self):
+        st, d, _ = self.req('GET', '/api/status')
+        self.assertEqual(st, 200)
+        self.assertIsNone(d['vps'])  # nothing pushed yet
+        os.makedirs(os.path.join(self.st.data, 'status'), exist_ok=True)
+        with open(os.path.join(self.st.data, 'status', 'vps.json'), 'w') as f:
+            json.dump({'generated': 'x', 'roadmap': '## Morning list\n- [ ] a', 'activity': ['l1']}, f)
+        d = self.req('GET', '/api/status')[1]
+        self.assertEqual(d['vps']['roadmap'], '## Morning list\n- [ ] a'); self.assertIn('age_s', d['vps'])
+        self.assertIn('recipes', d['apps']); self.assertIsInstance(d['screens'], list)
+        self.assertIn('<title>', self.req('GET', '/status')[1])
+        # the floor plan is relayed from the house server (the stand-in has none: an error, not a crash)
+        self.assertIn(self.req('GET', '/house-plan.svg')[0], (200, 404, 502))
 
     def test_authoring_guide(self):
         st, text, r = self.req('GET', '/api/authoring')

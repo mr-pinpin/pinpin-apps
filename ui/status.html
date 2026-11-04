@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PinPin status</title>
+<style>
+  :root { --bg: #0d1117; --card: #161c26; --line: #2a3342; --fg: #f4f6fa; --muted: #9aa6b8; --accent: #ffb84d; --good: #5fd38d; --bad: #ff6b6b; --cool: #6cb6ff; }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 980px; padding: 16px; background: var(--bg); color: var(--fg); font: 17px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  h1 { font-size: 28px; margin: 4px 0 0; } h2 { font-size: 15px; margin: 26px 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
+  .sub { color: var(--muted); font-size: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .morning { border: 2px solid var(--accent); }
+  .morning h3 { margin: 0 0 8px; color: var(--accent); font-size: 20px; }
+  ul.check { list-style: none; padding: 0; margin: 0; } ul.check li { padding: 5px 0 5px 30px; position: relative; }
+  ul.check li::before { content: ""; position: absolute; left: 0; top: 8px; width: 18px; height: 18px; border: 2px solid var(--muted); border-radius: 4px; }
+  ul.check li.done { color: var(--muted); } ul.check li.done::before { background: var(--good); border-color: var(--good); }
+  ul.check li.done::after { content: "✓"; position: absolute; left: 4px; top: 4px; color: #0d1117; font-weight: 900; font-size: 15px; }
+  .grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  .stat .k { color: var(--muted); font-size: 13px; } .stat .v { font-size: 24px; font-weight: 800; }
+  .good { color: var(--good); } .bad { color: var(--bad); } .warn { color: var(--accent); }
+  .road h3 { font-size: 17px; margin: 16px 0 6px; } .road h3:first-child { margin-top: 0; } .road p { margin: 4px 0; color: var(--muted); }
+  code { background: #0006; padding: 1px 5px; border-radius: 4px; font-size: 90%; }
+  .bench .t { font-weight: 700; } .bench .l { color: var(--muted); font-size: 14px; margin: 2px 0 0 0; } .bench > div + div { margin-top: 12px; }
+  .log { font: 12.5px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; color: #c9d1dc; }
+  .log .who { color: var(--cool); } .log .t { color: var(--muted); }
+  .plan { background: #fff; border-radius: 10px; padding: 8px; } .plan img { width: 100%; display: block; }
+  .scr { display: flex; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); } .scr:last-child { border: 0; }
+  a { color: var(--accent); }
+  .stale { color: var(--bad); font-weight: 700; }
+</style>
+</head>
+<body>
+<h1 id="hello">Good morning</h1>
+<div class="sub" id="meta">Loading…</div>
+
+<h2>Needs you</h2>
+<div class="card morning" id="morning"><div class="sub">…</div></div>
+
+<h2>Headset</h2>
+<div class="card"><div class="grid" id="headset"></div><div class="sub" id="hsx" style="margin-top:8px"></div></div>
+
+<h2>Screens and apps</h2>
+<div class="card" id="screens"></div>
+<div class="sub" style="margin-top:6px"><a href="/">Open the apps control page →</a></div>
+
+<h2>Benchmarks</h2>
+<div class="card bench" id="bench"></div>
+
+<h2>Roadmap</h2>
+<div class="card road" id="road"></div>
+
+<h2>House plan</h2>
+<div class="plan"><img id="plan" alt="Floor plan from the house server"></div>
+
+<h2>Last activity</h2>
+<div class="card log" id="log"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const inline = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+function ago(s) { if (s == null) return '?'; return s < 90 ? s + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : Math.round(s / 3600) + ' h'; }
+function since(iso) { return iso ? ago(Math.round((Date.now() - Date.parse(iso)) / 1000)) + ' ago' : '?'; }
+
+// markdown subset: ## headings, - [ ] / - [x] items, - bullets, paragraphs
+function sections(md) {
+  const out = []; let cur = { title: '', lines: [] };
+  for (const l of md.split('\n')) {
+    if (/^#{1,3} /.test(l)) { if (cur.title || cur.lines.length) out.push(cur); cur = { title: l.replace(/^#+ /, ''), lines: [] }; }
+    else cur.lines.push(l);
+  }
+  out.push(cur); return out;
+}
+function render(lines) {
+  let html = '', inList = false;
+  for (const l of lines) {
+    const m = l.match(/^\s*[-*] (\[( |x|X)\] )?(.*)$/);
+    if (m) {
+      if (!inList) { html += '<ul class="check">'; inList = true; }
+      html += `<li class="${m[2] && m[2] !== ' ' ? 'done' : ''}"${m[1] ? '' : ' style="padding-left:30px"'}>${inline(m[3])}</li>`;
+    } else {
+      if (inList) { html += '</ul>'; inList = false; }
+      if (l.trim()) html += `<p>${inline(l)}</p>`;
+    }
+  }
+  return html + (inList ? '</ul>' : '');
+}
+
+function headset(h) {
+  const st = h.state || 'unknown';
+  const cls = st === 'worn' ? 'good' : st === 'standby' || st === 'asleep' ? 'warn' : st.startsWith('error') || st === 'unreachable' ? 'bad' : '';
+  const stat = (k, v, c) => `<div class="stat"><div class="k">${k}</div><div class="v ${c || ''}">${esc(v ?? '–')}</div></div>`;
+  $('headset').innerHTML = stat('state', st, cls) + stat('room_lab', h.version ? 'v' + h.version : null) +
+    stat('battery', h.battery != null ? h.battery + '%' + (h.charging ? ' ⚡' : '') : null, h.battery != null && h.battery < 25 ? 'bad' : '') +
+    stat('fps', h.fps) + stat('screens placed', h.screens) + stat('stream', h.stream ? h.stream + (h.source ? ' · ' + h.source : '') : null) +
+    stat('anchors', h.anchors) + stat('latency', h.latency_ms != null ? Math.round(h.latency_ms) + ' ms' : null);
+  $('hsx').innerHTML = (h.flags_on && h.flags_on.length ? 'Flags on: ' + h.flags_on.map(esc).join(', ') + '. ' : '') +
+    (h.errors && h.errors.length ? '<span class="bad">Errors: ' + h.errors.map((e) => esc(JSON.stringify(e))).join('; ') + '</span> ' : '') +
+    'Checked ' + since(h.checked) + '.' + (st === 'standby' ? ' Standby: the numbers are from when it was last awake.' : '');
+}
+
+function screens(list, apps) {
+  const rows = list.map((s) => `<div class="scr"><div><b>Screen ${esc(s.screen)}</b> <span class="sub">${s.role === 'main' ? 'main (game / Atlas)' : s.role || 'not in house.json'}</span></div>
+    <div>${s.url ? 'web: ' + esc(s.url.replace(/^https?:\/\//, '').slice(0, 40)) : s.app ? esc(apps[s.app] || s.app) : '<span class="sub">no app</span>'}</div></div>`);
+  $('screens').innerHTML = rows.join('') || '<div class="sub">No screens yet.</div>';
+}
+
+function bench(v) {
+  let html = '';
+  if (v.campaign) {
+    const c = v.campaign;
+    html += `<div><div class="t">${c.finished ? 'Campaign finished' : 'Campaign running'}: ${esc(c.what.split(';')[0])}</div>
+      <div class="l">started ${since(c.started)} · ${c.runs_done} runs done${c.finished ? '' : ' · verdicts when it ends (bench/results/campaign-*.md)'}</div></div>`;
+  }
+  html += (v.bench || []).map((b) => `<div><div class="t">${esc(b.title)}</div>${b.lines.map((l) => `<div class="l">${inline(l)}</div>`).join('')}<div class="l">${esc(b.file)} · ${since(b.when)}</div></div>`).join('');
+  $('bench').innerHTML = html || '<div class="sub">No results yet.</div>';
+}
+
+function activity(lines) {
+  $('log').innerHTML = lines.slice().reverse().map((l) => {
+    const m = l.match(/^(\S+) (\S+) (.*)$/);
+    return m ? `<span class="t">${esc(m[1].slice(11, 16))}</span> <span class="who">${esc(m[2])}</span> ${esc(m[3])}` : esc(l);
+  }).join('\n');
+}
+
+async function load() {
+  let d;
+  try { d = await (await fetch('/api/status', { cache: 'no-store' })).json(); } catch (e) { $('meta').innerHTML = '<span class="stale">The Mini is not answering.</span>'; return; }
+  const h = new Date().getHours();
+  $('hello').textContent = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+  const v = d.vps;
+  $('meta').innerHTML = `${new Date().toLocaleString([], { weekday: 'long', hour: '2-digit', minute: '2-digit' })} · ` +
+    (v ? `agents' data ${v.age_s > 900 ? '<span class="stale">' + ago(v.age_s) + ' old</span>' : ago(v.age_s) + ' old'} · headset owner: ${esc((v.owner || '').split('\n')[0])}` : '<span class="stale">no data from the agents yet</span>');
+  headset(d.headset || {});
+  screens(d.screens || [], d.apps || {});
+  if (v) {
+    const secs = sections(v.roadmap || '');
+    const morning = secs.find((s) => /morning list/i.test(s.title));
+    $('morning').innerHTML = morning ? `<h3>${inline(morning.title)}</h3>` + render(morning.lines) : '<div class="sub">Nothing waiting for you.</div>';
+    $('road').innerHTML = secs.filter((s) => s !== morning && s.title).map((s) => `<h3>${inline(s.title)}</h3>` + render(s.lines)).join('');
+    bench(v); activity(v.activity || []);
+  }
+  $('plan').src = '/house-plan.svg?rev=' + (d.house_rev || 0);
+}
+load(); setInterval(load, 30000);
+</script>
+</body>
+</html>

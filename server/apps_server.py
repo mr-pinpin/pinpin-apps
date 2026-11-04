@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """pinpin-apps server (Mini, port 57830): serves the mini-apps to the wall screens and lets the assistant evolve them.
 
+  GET  /status                      the morning status page (ui/status.html): roadmap, headset, benchmarks, activity,
+                                    house plan, screens;  GET /api/status its data;  GET /house-plan.svg the floor plan
   GET  /                            the control page (ui/index.html): app gallery, screens and their apps
   GET  /screen/<id>                 the app house.json maps to screen <id>: host.js + the app in a sandboxed iframe
                                     (the runner's window URL);  GET /frame/<app>/  the app document itself
@@ -255,6 +257,57 @@ def make_assistant(url):
     return HttpAssistant(url) if url else StubAssistant()
 
 
+# ---- the headset, for the status page: read-only adb on this machine (the Mini holds the headset's wireless adb)
+
+class Headset:
+    PKG = 'com.pinpin.wallscreen.roomlab'
+
+    def __init__(self, adb, serial):
+        self.adb, self.serial, self.last = os.path.expanduser(adb), serial, {'state': 'unknown', 'checked': None}
+
+    def sh(self, cmd, t=20):
+        r = subprocess.run([self.adb, '-s', self.serial, 'shell', cmd], capture_output=True, text=True, timeout=t)
+        return r.stdout
+
+    def poll(self):
+        out = {'checked': now()}
+        try:
+            if not os.path.exists(self.adb):
+                out['state'] = 'no adb here'
+                return out
+            info = self.sh(f"dumpsys package {self.PKG} | grep -m1 versionName; dumpsys vrpowermanager | grep -m1 '^State:'; "
+                           "dumpsys battery | grep -E 'level:|powered: true'")
+            if not info.strip():
+                out['state'] = 'unreachable'
+                return out
+            m = re.search(r'versionName=(\S+)', info); out['version'] = m.group(1) if m else None
+            m = re.search(r'State: (\w+)', info); out['vr'] = m.group(1) if m else None  # MOUNTED (worn) / STANDBY / ...
+            m = re.search(r'level: (\d+)', info); out['battery'] = int(m.group(1)) if m else None
+            out['charging'] = 'powered: true' in info
+            try:
+                st = json.loads(self.sh(f'run-as {self.PKG} cat files/status.json') or '{}')
+            except ValueError:
+                st = {}
+            mv = st.get('moonlight') or {}
+            out.update({'fps': st.get('fps'), 'uptime_s': st.get('uptime'), 'refresh_hz': st.get('refreshHz'),
+                        'screens': len((st.get('placement') or {}).get('screens', [])),
+                        'source': (st.get('video') or {}).get('source'), 'stream': mv.get('stage'), 'stream_mode': mv.get('mode'),
+                        'latency_ms': (st.get('video') or {}).get('latencyMs'),
+                        'anchors': '{located}/{stored}'.format(**st['anchors']) if isinstance(st.get('anchors'), dict) else None,
+                        'errors': (st.get('errors') or [])[-3:]})
+            flags = {k.upper(): bool(v.get('on')) for k, v in st.items() if isinstance(v, dict) and 'on' in v}
+            out['flags_on'] = sorted(k for k, v in flags.items() if v)
+            out['state'] = {'MOUNTED': 'worn', 'STANDBY': 'standby', 'ASLEEP': 'asleep'}.get(out['vr'], (out['vr'] or '?').lower())
+        except Exception as e:
+            out['state'] = f'error: {str(e)[:120]}'
+        return out
+
+    def watch(self, period):
+        while True:
+            self.last = self.poll()
+            time.sleep(period)
+
+
 # ---- events to the pages
 
 class Hub:
@@ -299,6 +352,7 @@ class State:
         self.sdk = os.path.join(a.repo, 'sdk')
         self.data = a.data
         self.ask_url = a.ask_url or os.environ.get('PINPIN_ASSISTANT_URL', '')
+        self.headset = Headset(a.adb, a.headset_serial)
         self._assistant = None
         self.proxy_cache, self.proxy_lock = {}, threading.Lock()
         try:
@@ -627,6 +681,16 @@ class Handler(BaseHTTPRequestHandler):
                                        'assistant': st.assistant.name, 'house_rev': (st.house.doc or {}).get('rev')})
             if u.path in ('/', '/index.html'):
                 return self.file(os.path.join(st.repo.root, 'ui', 'index.html'))
+            if u.path in ('/status', '/status/'):
+                return self.file(os.path.join(st.repo.root, 'ui', 'status.html'))
+            if u.path == '/api/status':
+                return self.send(200, self.status())
+            if u.path == '/house-plan.svg':  # the house server's floor plan, relayed (phones reach this port only)
+                try:
+                    with urllib.request.urlopen(st.house.url + '/house/plan.svg', timeout=5) as r:
+                        return self.send(200, body=r.read(), ctype='image/svg+xml')
+                except Exception as e:
+                    return self.send(502, {'error': f'house plan: {e}'})
             if u.path == '/api/authoring':  # docs/AUTHORING.md, live, for the assistant's context
                 return self.file(os.path.join(st.repo.root, 'docs', 'AUTHORING.md'))
             if u.path == '/favicon.ico':
@@ -693,6 +757,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, {'error': 'not found'})
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+    def status(self):
+        """The morning status page's data: the VPS bundle (tools/status_push.sh), the headset, screens and apps."""
+        st = self.st
+        p = os.path.join(st.data, 'status', 'vps.json')
+        try:
+            with open(p) as f:
+                vps = json.load(f)
+            vps['age_s'] = round(time.time() - os.path.getmtime(p))
+        except (OSError, ValueError):
+            vps = None
+        names = {i: (st.repo.manifest(i) or {}).get('name', i) for i in st.repo.ids()}
+        return {'now': now(), 'vps': vps, 'headset': st.headset.last, 'screens': self.screen_list(), 'apps': names,
+                'house_rev': (st.house.doc or {}).get('rev'), 'assistant': st.assistant.name}
 
     def screen_list(self):
         st = self.st
@@ -954,6 +1032,9 @@ def main_args(argv=None):
     ap.add_argument('--port', type=int, default=57830)
     ap.add_argument('--push', action='store_true', help='git push after every commit')
     ap.add_argument('--poll', type=float, default=3.0)
+    ap.add_argument('--adb', default='~/.local/share/pinpin-quest/platform-tools/adb', help='for the status page (read-only)')
+    ap.add_argument('--headset-serial', default='127.0.0.1:26351')
+    ap.add_argument('--headset-poll', type=float, default=60.0, help='seconds; 0: never ask the headset')
     ap.add_argument('--runner', default='', help='the laptop runner input URL; default: learned from its polls')
     ap.add_argument('--io-timeout', type=float, default=30.0, help='seconds a client may stall a request')
     return ap.parse_args(argv)
@@ -970,6 +1051,8 @@ def serve(a):
     srv = ThreadingHTTPServer((a.bind, a.port), handler)
     srv.daemon_threads = True
     threading.Thread(target=st.watch_house, args=(a.poll,), daemon=True).start()
+    if a.headset_poll > 0:
+        threading.Thread(target=st.headset.watch, args=(a.headset_poll,), daemon=True).start()
     return srv, st
 
 
