@@ -1,0 +1,1 @@
+{"id":"e2e-timer","name":"Kitchen timer","description":"Voice-controlled kitchen countdown timer","size":{"aspect":"16:10","preferred_px":[1920,1200],"distance_m":1.5},"permissions":{"fetch":[],"voice":true,"ask":false,"storage":true},"config":{}}

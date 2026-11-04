@@ -1,0 +1,47 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Kitchen timer</title>
+<style>
+#t{font-size:14rem;font-weight:800;text-align:center;line-height:1;font-variant-numeric:tabular-nums}
+#s{font-size:1.5rem;text-align:center;color:var(--pp-muted);margin-top:1rem}
+.done #t{color:var(--pp-bad);animation:b 1s steps(2) infinite}
+.run #t{color:var(--pp-good)}
+@keyframes b{50%{opacity:.25}}
+</style></head><body class="pp-center">
+<div id="t" class="pp-huge">0:00</div>
+<div id="s">Ready</div>
+<div class="pp-hint">Say <b>5 minutes</b> | <b>30 seconds</b> | <b>pause</b> | <b>resume</b> | <b>stop</b></div>
+<script>
+let end=0,left=0,state='idle';
+function save(){pinpin.store.set('timer',{end,left,state});}
+function start(ms){left=ms;end=Date.now()+ms;state='run';save();}
+pinpin.onVoice(t=>{
+  t=(t||'').toLowerCase();
+  const m=t.match(/(\d+(?:\.\d+)?)\s*(h|hour|hours|m|min|mins|minute|minutes|s|sec|secs|second|seconds)\b/);
+  if(m){
+    const n=parseFloat(m[1]),u=m[2][0];
+    start(n*(u==='h'?3600000:u==='m'?60000:1000));
+  } else if(/pause|hold/.test(t)){
+    if(state==='run'){left=Math.max(0,end-Date.now());state='pause';save();}
+  } else if(/resume|continue|go/.test(t)){
+    if(state==='pause'){end=Date.now()+left;state='run';save();}
+  } else if(/stop|cancel|reset|clear/.test(t)){
+    end=0;left=0;state='idle';save();
+  }
+});
+pinpin.ready.then(()=>{
+  const s=pinpin.store.get('timer',null);
+  if(s){end=s.end||0;left=s.left||0;state=s.state||'idle';}
+  const t=document.getElementById('t'),st=document.getElementById('s');
+  function render(){
+    let ms=0;
+    if(state==='run'){ms=Math.max(0,end-Date.now());if(ms===0){state='done';save();}}
+    else if(state==='pause')ms=left;
+    const sec=Math.ceil(ms/1000),h=Math.floor(sec/3600),mm=Math.floor((sec%3600)/60),ss=sec%60;
+    t.textContent=h?h+':'+String(mm).padStart(2,'0')+':'+String(ss).padStart(2,'0'):mm+':'+String(ss).padStart(2,'0');
+    document.body.classList.toggle('done',state==='done');
+    document.body.classList.toggle('run',state==='run');
+    st.textContent={idle:'Ready',run:'Running',pause:'Paused',done:"Time's up!"}[state];
+    pinpin.fit&&pinpin.fit(t);
+  }
+  setInterval(render,250);render();
+});
+</script></body></html>
