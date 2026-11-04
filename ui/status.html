@@ -40,6 +40,9 @@
 <h2>Needs you</h2>
 <div class="card morning" id="morning"><div class="sub">…</div></div>
 
+<h2>Checks</h2>
+<div class="card" id="checks"><div class="sub">No checks reported yet.</div></div>
+
 <h2>Headset</h2>
 <div class="card"><div class="grid" id="headset"></div><div class="sub" id="hsx" style="margin-top:8px"></div></div>
 
@@ -140,6 +143,9 @@ async function load() {
   $('meta').innerHTML = `${new Date().toLocaleString([], { weekday: 'long', hour: '2-digit', minute: '2-digit' })} · ` +
     (v ? `agents' data ${v.age_s > 900 ? '<span class="stale">' + ago(v.age_s) + ' old</span>' : ago(v.age_s) + ' old'} · headset owner: ${esc((v.owner || '').split('\n')[0])}` : '<span class="stale">no data from the agents yet</span>');
   headset(d.headset || {});
+  if ((d.checks || []).length) $('checks').innerHTML = d.checks.map((c) => `<div class="scr"><div><b>${esc(c.component)}</b>
+    <div class="sub">${since(c.at)}${c.link ? ' · ' + esc(c.link) : ''}</div></div>
+    <div class="${c.ok === true ? 'good' : c.ok === false ? 'bad' : ''}" style="text-align:right">${c.ok === true ? '✓ ' : c.ok === false ? '✗ ' : ''}${esc(c.text)}</div></div>`).join('');
   screens(d.screens || [], d.apps || {});
   if (v) {
     const secs = sections(v.roadmap || '');

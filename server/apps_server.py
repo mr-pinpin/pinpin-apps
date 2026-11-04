@@ -12,6 +12,8 @@
   GET  /events?screen=<id>          server-sent events to the page: reload, voice {text}
   Powerful calls need the shared token (Authorization: Bearer <token>, <data>/token): input/eval/say/app/open/reload
   on screens, build, PUT/DELETE apps, rollback. GET /api/auth shows the rollout (grace hour, unauthenticated callers).
+  POST /api/status/component        {component, text, ok?, link?} one check line on /status (token), or write the same
+                                    JSON to <data>/status/components/<component>.json
   GET  /api/apps                    the catalog: [{id, name, description, size, permissions, screens, icon (data: URI),
                                     icon_png (URL of a PNG, ?size=N, for the headset)}]
   GET  /api/apps/<app>              {manifest, files: {path: text}, commit}
@@ -901,7 +903,17 @@ class Handler(BaseHTTPRequestHandler):
                 cursor = [l.rstrip() for l in f.readlines()[-6:]]
         except OSError:
             cursor = []
+        checks = []
+        cd = os.path.join(st.data, 'status', 'components')
+        for fn in sorted(os.listdir(cd)) if os.path.isdir(cd) else []:
+            if fn.endswith('.json'):
+                try:
+                    with open(os.path.join(cd, fn)) as f:
+                        checks.append(json.load(f))
+                except (OSError, ValueError):
+                    pass
         return {'now': now(), 'vps': vps, 'headset': st.headset.last, 'screens': self.screen_list(), 'apps': names, 'cursor': cursor,
+                'checks': checks,
                 'house_rev': (st.house.doc or {}).get('rev'), 'assistant': st.assistant.name}
 
     def screen_list(self):
@@ -1094,10 +1106,21 @@ class Handler(BaseHTTPRequestHandler):
             err = st.post_message(sender, parts[2], kind, d.get('data'), dry)
             return self.send(403 if 'may not' in err or 'accept' in err else 404 if err.startswith('no app') else 400 if err else 200,
                              {'error': err} if err else {'queued': not dry, 'dry': dry})
-        protected = parts == ['api', 'build'] or (parts[:2] == ['api', 'apps'] and parts[3:] == ['rollback']) or \
+        protected = parts == ['api', 'status', 'component'] or parts == ['api', 'build'] or (parts[:2] == ['api', 'apps'] and parts[3:] == ['rollback']) or \
             (parts[:2] == ['api', 'screens'] and len(parts) == 4 and parts[3] != 'shown')
         if protected and not self.authed():
             return
+        if parts == ['api', 'status', 'component']:  # a one-line check result for /status (e.g. the nightly assistant eval)
+            name = d.get('component')
+            if not (isinstance(name, str) and re.match(r'^[a-z0-9][a-z0-9-]{0,40}$', name)) or not isinstance(d.get('text'), str):
+                return self.send(400, {'error': 'component (lowercase id) and text required'})
+            rec = {'component': name, 'text': d['text'][:300], 'ok': d.get('ok') if isinstance(d.get('ok'), bool) else None,
+                   'link': d['link'][:300] if isinstance(d.get('link'), str) else None, 'at': now()}
+            cd = os.path.join(st.data, 'status', 'components'); os.makedirs(cd, exist_ok=True)
+            with open(os.path.join(cd, name + '.json.tmp'), 'w') as f:
+                json.dump(rec, f)
+            os.replace(os.path.join(cd, name + '.json.tmp'), os.path.join(cd, name + '.json'))
+            return self.send(200, rec)
         if parts == ['api', 'build']:  # the control page's "ask Claude to build an app": the assistant runs its app tools
             prompt = d.get('prompt')
             if not (isinstance(prompt, str) and prompt.strip()):

@@ -552,6 +552,10 @@ class Apps(unittest.TestCase):
         self.assertIn('recipes', d['apps']); self.assertIsInstance(d['screens'], list)
         self.assertIn('<title>', self.req('GET', '/status')[1])
         self.assertIn('All the switches', self.req('GET', '/help')[1])
+        st, c, _ = self.req('POST', '/api/status/component', {'component': 'assistant-eval', 'text': '17/18, p50 10.7s', 'ok': True})
+        self.assertEqual(st, 200)
+        self.assertEqual([(x['component'], x['ok']) for x in self.req('GET', '/api/status')[1]['checks']], [('assistant-eval', True)])
+        self.assertEqual(self.req('POST', '/api/status/component', {'component': '../x', 'text': 'x'})[0], 400)
         # the floor plan is relayed from the house server (the stand-in has none: an error, not a crash)
         self.assertIn(self.req('GET', '/house-plan.svg')[0], (200, 404, 502))
 
