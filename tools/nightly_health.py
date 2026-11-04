@@ -4,6 +4,7 @@ check line per area ("nightly-<area>"), plus a summary line. Read-only on everyt
   apps       the 6 apps rendered in headless Chrome on the Mini (no JS errors, expected text), plus the hostile-app
              sandbox probe (ALL BLOCKED)
   house      a round trip on the SCRATCH house (:57801): get, put, a stale put answered 409, tag, rollback to the tag
+             (compared without rev/updated/by and the server-derived plan layer)
   kanban     add, move, delete a card on the SCRATCH board (?board=scratch)
   backups    the newest data snapshot is under 2 h old, and restoring it into a scratch dir on the Mini gives exactly
              the snapshot's files (sha256 per file)
@@ -95,7 +96,7 @@ tc=$(curl -s -m10 -o t.out -w "%%{http_code}" -X POST "$B/house/tag?rev=$R&name=
 R1=$((R+1))
 rc=$(curl -s -m10 -o r.out -w "%%{http_code}" -X POST -H "If-Match: $R1" "$B/house/rollback?rev=$R")
 curl -s -m10 -o d2.json $B/house
-same=$(python3 -c "import json; a,b=json.load(open('d0.json')),json.load(open('d2.json')); [x.pop(k,None) for x in (a,b) for k in ('rev','updated','by')]; print('yes' if a==b else 'no')")
+same=$(python3 -c "import json; a,b=json.load(open('d0.json')),json.load(open('d2.json')); [x.pop(k,None) for x in (a,b) for k in ('rev','updated','by','plan')]; print('yes' if a==b else 'no')")
 echo "rev $R -> put $c1 -> stale put $c2 -> tag $tc -> rollback $rc -> content restored: $same"
 [ "$rc" = 200 ] && [ "$same" = yes ] || exit 1
 [ "$tc" = 200 ] || exit 2
