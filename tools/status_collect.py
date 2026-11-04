@@ -10,7 +10,10 @@ import re
 import subprocess
 import sys
 
-QWS = os.environ.get('QWS', '/root/work/quest-wall-screen')
+QWS = os.environ.get('QWS', '/root/work/quest-wall-screen')         # the shared checkout: runtime files (activity.log)
+DOCS = os.environ.get('QWS_DOCS', '/root/work/qws-ad')                # my worktree, fetched fresh: roadmap, log, flags
+APPS = os.environ.get('APPS_REPO', '/root/work/pinpin-apps')
+SINCE = os.environ.get('OVERNIGHT_SINCE', '2026-11-04T01:30:00Z')
 VERDICT = re.compile(r'\b(KEEP|DROP|INCONCLUSIVE|PASS|FAIL|verdict|winner|better|worse)\b', re.I)
 
 
@@ -24,7 +27,8 @@ def read(path, default=''):
 
 def bench():
     """Finished campaigns first (bench/campaign.py writes campaign-<block>-<date>.md), then other recent verdict notes."""
-    files = sorted(glob.glob(os.path.join(QWS, 'bench/results/*.md')), key=os.path.getmtime, reverse=True)
+    base = DOCS if os.path.isdir(DOCS) else QWS
+    files = sorted(glob.glob(os.path.join(base, 'bench/results/*.md')), key=os.path.getmtime, reverse=True)
     files = [f for f in files if os.path.basename(f).startswith('campaign-')] + \
             [f for f in files if not os.path.basename(f).startswith('campaign-') and os.path.basename(f) != 'stress.md'][:5]
     out = []
@@ -52,19 +56,69 @@ def campaign_progress(activity):
 def flags():
     """room_lab/flags.json as a list (the user guide's flag table is generated from it)."""
     try:
-        d = json.loads(read(os.path.join(QWS, 'room_lab/flags.json')) or '{}')
+        d = json.loads(read(os.path.join(DOCS if os.path.isdir(DOCS) else QWS, 'room_lab/flags.json')) or '{}')
     except ValueError:
         return []
     items = d.get('flags', []) if isinstance(d, dict) else d
     return [{k: f.get(k) for k in ('name', 'where', 'state', 'default', 'category', 'reason', 'menu')} for f in items if isinstance(f, dict)]
 
 
+def git(repo, *a):
+    return subprocess.run(['git', '-C', repo, *a], capture_output=True, text=True, timeout=60).stdout
+
+
+def fresh_docs():
+    """Fetch origin/main into the docs worktree (never the shared checkout), so the Morning list is the latest."""
+    if os.path.isdir(DOCS):
+        git(DOCS, 'fetch', '-q', 'origin')
+        git(DOCS, 'checkout', '-q', '--detach', 'origin/main')
+    return DOCS if os.path.isdir(DOCS) else QWS
+
+
+SKIP = re.compile(r'^(captain: (log|ticks)|house: mirror rev|Merge |(test|e2e|probe|zz)-[\w-]*: )', re.I)  # routine + test apps
+
+
+def area(repo_name, subject, files):
+    s = subject.lower()
+    if repo_name == 'apps':
+        return 'apps'
+    if s.startswith('v0.') or any(f.startswith('room_lab/') for f in files):
+        return 'headset'
+    if s.startswith('assistant') or any(f.startswith('assistant/') for f in files):
+        return 'assistant'
+    if any(f.startswith('house/') for f in files) or s.startswith('house'):
+        return 'house'
+    if any(f.startswith('bench/') for f in files) or re.match(r'^(bench|stress|campaign|verdict|gate)', s):
+        return 'benchmarks'
+    return 'coordination'
+
+
+def overnight():
+    """Every agent's commits since SINCE, one line each, grouped by area (routine log/mirror commits skipped)."""
+    out = []
+    for name, repo in (('qws', DOCS if os.path.isdir(DOCS) else QWS), ('apps', APPS)):
+        log = git(repo, 'log', f'--since={SINCE}', '--format=@@%h\t%cI\t%s', '--name-only')
+        for block in log.split('@@')[1:]:
+            lines = block.strip().splitlines()
+            sha, when, subj = lines[0].split('\t', 2)
+            if SKIP.search(subj):
+                continue
+            utc = datetime.datetime.fromisoformat(when).astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            out.append({'sha': sha, 'when': utc, 'area': area(name, subj, lines[1:]), 'repo': name, 'subject': subj[:140]})
+    out.sort(key=lambda c: c['when'], reverse=True)
+    return out
+
+
 def main():
+    docs = fresh_docs()
     activity = read(os.path.join(QWS, 'bench/activity.log')).splitlines()
     head = subprocess.run(['git', '-C', QWS, 'log', '-1', '--format=%h %cI %s'], capture_output=True, text=True).stdout.strip()
     doc = {
         'generated': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-        'roadmap': read(os.path.join(QWS, 'docs/captain/ROADMAP.md')),
+        'roadmap': read(os.path.join(docs, 'docs/captain/ROADMAP.md')),
+        'captain_log': read(os.path.join(docs, 'docs/captain/LOG.md')),
+        'overnight': overnight(),
+        'overnight_since': SINCE,
         'bench': bench(),
         'campaign': campaign_progress(activity[-3000:]),
         'activity': activity[-20:],

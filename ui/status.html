@@ -30,12 +30,20 @@
   .scr { display: flex; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); } .scr:last-child { border: 0; }
   a { color: var(--accent); }
   .stale { color: var(--bad); font-weight: 700; }
+  .area { margin-top: 12px; } .area:first-child { margin-top: 0; }
+  .area h3 { margin: 0 0 4px; font-size: 17px; } .area h3 span { color: var(--muted); font-weight: 500; font-size: 14px; }
+  .line { font-size: 15px; padding: 2px 0; display: flex; gap: 8px; } .line .t { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+  details summary { color: var(--accent); cursor: pointer; font-size: 14px; margin-top: 4px; }
+  .clog { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
 </style>
 </head>
 <body>
 <h1 id="hello">Good morning</h1>
 <div class="sub" id="meta">Loading…</div>
 <div class="sub" style="margin-top:4px"><a href="/help">How to use everything →</a> · <a href="/">Apps →</a></div>
+
+<h2>Overnight</h2>
+<div class="card" id="overnight"><div class="sub">…</div></div>
 
 <h2>Needs you</h2>
 <div class="card morning" id="morning"><div class="sub">…</div></div>
@@ -127,6 +135,28 @@ function bench(v) {
   $('bench').innerHTML = html || '<div class="sub">No results yet.</div>';
 }
 
+const AREAS = [['headset', 'Headset (room_lab)'], ['assistant', 'Claude assistant'], ['apps', 'Apps and wall screens'],
+  ['house', 'House file'], ['benchmarks', 'Benchmarks and tests'], ['coordination', 'Coordination']];
+function overnight(v) {
+  const items = v.overnight || [];
+  const line = (c) => `<div class="line"><span class="t">${esc(c.when.slice(11, 16))}</span><span>${inline(c.subject)}</span></div>`;
+  let html = `<div class="sub" style="margin-bottom:8px">${items.length} changes by the agents since ${esc((v.overnight_since || '').slice(11, 16))} UTC, newest first (times UTC).</div>`;
+  for (const [key, title] of AREAS) {
+    const xs = items.filter((c) => c.area === key);
+    if (!xs.length) continue;
+    html += `<div class="area"><h3>${title} <span>${xs.length}</span></h3>${xs.slice(0, 5).map(line).join('')}` +
+      (xs.length > 5 ? `<details><summary>${xs.length - 5} more</summary>${xs.slice(5).map(line).join('')}</details>` : '') + '</div>';
+  }
+  // the coordinator's log, newest first
+  const log = (v.captain_log || '').split('\n').filter((l) => /^\s*[-*] /.test(l)).map((l) => l.replace(/^\s*[-*] /, '')).reverse();
+  if (log.length) {
+    const ll = (l) => { const m = l.match(/^(\d\d:\d\d)\s*(.*)$/); return `<div class="line"><span class="t">${m ? m[1] : ''}</span><span>${inline(m ? m[2] : l)}</span></div>`; };
+    html += `<div class="clog"><h3 style="margin:0 0 4px;font-size:17px">Coordinator's log</h3>${log.slice(0, 6).map(ll).join('')}` +
+      (log.length > 6 ? `<details><summary>${log.length - 6} earlier entries</summary>${log.slice(6).map(ll).join('')}</details>` : '') + '</div>';
+  }
+  $('overnight').innerHTML = html;
+}
+
 function activity(lines) {
   $('log').innerHTML = lines.slice().reverse().map((l) => {
     const m = l.match(/^(\S+) (\S+) (.*)$/);
@@ -152,7 +182,7 @@ async function load() {
     const morning = secs.find((s) => /morning list/i.test(s.title));
     $('morning').innerHTML = morning ? `<h3>${inline(morning.title)}</h3>` + render(morning.lines) : '<div class="sub">Nothing waiting for you.</div>';
     $('road').innerHTML = secs.filter((s) => s !== morning && s.title).map((s) => `<h3>${inline(s.title)}</h3>` + render(s.lines)).join('');
-    bench(v); activity(v.activity || []);
+    bench(v); activity(v.activity || []); overnight(v);
   }
   $('plan').src = '/house-plan.svg?rev=' + (d.house_rev || 0);
   const cur = (d.cursor || []).filter((l) => !/START/.test(l));
