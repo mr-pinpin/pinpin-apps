@@ -460,6 +460,12 @@ class State:
         self.unauth = {}
         self.opens_lock = threading.Lock()
         self.runner_url = a.runner or ''  # set by the runner's own polls (X-PinPin-Runner) unless given
+        if not self.runner_url:  # or a fixed address in <data>/runner-url (until the runner sends the token)
+            try:
+                with open(os.path.join(a.data, 'runner-url')) as f:
+                    self.runner_url = f.readline().strip()
+            except OSError:
+                pass
         try:
             with open(os.path.join(a.data, 'proxy-private.json')) as f:
                 self.private_ok = set(json.load(f))

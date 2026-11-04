@@ -370,7 +370,10 @@ class Runner:
     def step(self):
         try:
             # the header tells the Mini where to forward input (it learns our address from the connection)
-            screens = get_json(self.a.mini + '/api/screens', headers={'X-PinPin-Runner': str(self.a.input_port)} if self.a.input_port else None)
+            hdr = {'X-PinPin-Runner': str(self.a.input_port)} if self.a.input_port else {}
+            if hdr and read_token():
+                hdr['Authorization'] = 'Bearer ' + read_token()  # the Mini only takes the input address from us with it
+            screens = get_json(self.a.mini + '/api/screens', headers=hdr or None)
             displays = get_json(self.a.displays + '/displays')
         except Exception as e:
             log('not syncing:', e)  # keep what runs; a Mini blip must not blank the screens
