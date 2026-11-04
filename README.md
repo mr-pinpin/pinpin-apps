@@ -26,6 +26,9 @@ commit in this repo.
 | `docs/AUTHORING.md`, `docs/HEADSET.md` | how the assistant writes an app; the headset's picker protocol |
 | `deploy/` | install scripts and LaunchAgents for the Mini and the laptop. |
 | `tools/sync.sh` | syncs the VPS checkout ↔ the Mini repo (where the assistant's commits land) ↔ GitHub. |
+| `ui/index.html` | the control page (`http://<mini>:57830/`) |
+| `sdk/host.js`, `sdk/host.css` | the trusted page around each sandboxed app: storage, proxy, ask and voice for that app only |
+| `tools/input_test.sh` | CDP input end to end on the laptop |
 | `tools/render_check.py` | headless Chrome over the DevTools protocol, on the Mini: JS errors, visible text, screenshot, and scripted voice (`--say`). |
 | `tools/air_test.sh` | end to end on the laptop, under the bench lock: a scratch display, an app, the runner's window, then teardown and air_smoke. |
 | `run_tests.sh` | the offline tests. Run it before every deploy. |
@@ -121,5 +124,17 @@ never committed.
 - [ ] M7: headset dictation to an app screen (`/say`): work-c4 is adding an app-mic button beside the Claude button (ASSIST flag)
 - [x] M10: catalog for the headset's app picker: icons (SVG data URI, plus a PNG rendered on the Mini), commit per app; protocol in docs/HEADSET.md (sent to work-c4)
 - [x] M11: more starter apps: shopping list, clock (sunrise/sunset), notes board. Each passed the render check with scripted voice
+- [x] M12: input over CDP (`/api/screens/<id>/click|move|scroll|type|key`), because synthetic CGEvent clicks never reach Chrome --app windows. `tools/input_test.sh` passed on the laptop at 03:2x UTC:
+  - a click at display u,v opened example.com's link;
+  - scroll moved 900 px;
+  - click, type and Enter ran a Wikipedia search;
+  - air_smoke passed.
+- [x] M13: hardening.
+  - Apps run in an opaque-origin sandboxed iframe, with host.js brokering store, fetch and ask for that one app.
+  - API guards: Origin null is refused, JSON only, X-PinPin header.
+  - The proxy follows no redirects and refuses the LAN, loopback and userinfo tricks.
+  - Upload size and stall limits.
+  - render_check's Chrome reaches only the apps server.
+- [x] M14: control page at `/` (gallery with live thumbnails, screens with app dropdowns); offline badges in weather, clock and recipes
 - [ ] M9: an app on a real screen: waits for the user to say which screen is the kitchen one
 - [ ] M8: the assistant creates a new app end to end ("make me a timer app") and it appears on a screen. Rehearsed through the API: `apps/timer` was made from docs/AUTHORING.md with `check: true`, rendered with no errors, and its voice worked

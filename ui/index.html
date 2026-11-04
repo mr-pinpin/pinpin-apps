@@ -70,8 +70,8 @@ function screens(list) {
     const a = byId[s.app];
     const opts = ['<option value="">— none —</option>'].concat(apps.map((x) => `<option value="${esc(x.id)}"${x.id === s.app ? ' selected' : ''}>${esc(x.name)}</option>`)).join('');
     return `<div class="scr">${a ? `<img src="${a.icon}" alt="">` : '<div class="ph"></div>'}
-      <div><b>Screen ${esc(s.screen)}</b><span class="live${s.clients ? ' on' : ''}" title="${s.clients ? 'showing now' : 'not on'}"></span>
-        <div class="sub">${s.url ? 'web page: ' + esc(s.url) : a ? esc(a.name) : 'nothing assigned'}${s.role ? '' : ' · not placed in the headset yet'}</div></div>
+      <div><b>Screen ${esc(s.screen)}</b><span class="live${s.clients || (s.url && s.shown_seq === s.seq) ? ' on' : ''}" title="${s.clients || (s.url && s.shown_seq === s.seq) ? 'showing now' : 'not on'}"></span>
+        <div class="sub">${s.url ? 'web page: ' + esc(s.url) : a ? esc(a.name) : 'nothing assigned'}${s.role ? '' : ' · not in house.json'}</div></div>
       <select data-screen="${esc(s.screen)}" aria-label="App for screen ${esc(s.screen)}">${opts}</select></div>`;
   }).join('');
 }
