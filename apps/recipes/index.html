@@ -122,7 +122,7 @@ async function suggest(more) {
     `Ingredients I have: ${S.have.join(', ')}.` + (exclude.length ? ` Not these again: ${exclude.join('; ')}.` : '') +
     ` Suggest ${n} recipes I can cook now (pantry staples like salt, oil, pepper, water are fine).` +
     (pinpin.config.diet ? ` Diet: ${pinpin.config.diet}.` : ''),
-    { json: true, system: 'You run a recipe app on a small screen above the kitchen oven, read from 1-2 m away. Reply with JSON only: ' +
+    { json: true, model: 'haiku', system: 'You run a recipe app on a small screen above the kitchen oven, read from 1-2 m away. Reply with JSON only: ' +
       '{"recipes":[{"title":"short name","minutes":20,"uses":["ingredients from my list"],"missing":["at most 2 non-staples I lack"],"steps":["3 to 7 short imperative steps, at most 14 words each"]}]}' });
   if (ticket !== asking) return;  // a newer request superseded this one
   const js = r.json && Array.isArray(r.json.recipes) ? r.json.recipes : null;

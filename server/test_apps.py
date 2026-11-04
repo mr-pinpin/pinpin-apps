@@ -332,11 +332,11 @@ class Apps(unittest.TestCase):
         srv = bg(ThreadingHTTPServer(('127.0.0.1', 0), A))
         self.st.assistant = apps_server.make_assistant(f'http://127.0.0.1:{srv.server_address[1]}/api/ask')
         try:
-            st, d, _ = self.req('POST', '/api/ask', {'app': 'recipes', 'screen': '2', 'prompt': 'eggs', 'json': True, 'junk': 1})
+            st, d, _ = self.req('POST', '/api/ask', {'app': 'recipes', 'screen': '2', 'prompt': 'eggs', 'json': True, 'model': 'haiku', 'junk': 1})
         finally:
             self.st.assistant = None; srv.shutdown(); srv.server_close()
         self.assertEqual(st, 200); self.assertEqual(d['json'], {'recipes': []})
-        self.assertEqual(A.seen, [{'app': 'recipes', 'screen': '2', 'prompt': 'eggs', 'json': True}])
+        self.assertEqual(A.seen, [{'app': 'recipes', 'screen': '2', 'prompt': 'eggs', 'json': True, 'model': 'haiku'}])
 
     def test_proxy_allowlist_secrets_cache(self):
         self.req('PUT', '/api/apps/net', {'files': self.app('net', perms={'fetch': [self.up_host]})})
@@ -382,6 +382,24 @@ class Apps(unittest.TestCase):
         finally:
             os.remove(os.path.join(self.st.data, 'assistant-url'))
         self.assertEqual(self.req('GET', '/health')[1]['assistant'], 'stub')
+
+    def test_open_url_on_screen(self):
+        st, d, _ = self.req('POST', '/api/screens/61/open', {'url': 'https://example.com/'})
+        self.assertEqual(st, 200, d); seq = d['seq']
+        rows = {r['screen']: r for r in self.req('GET', '/api/screens')[1]}
+        self.assertEqual((rows[61]['url'], rows[61]['seq'], rows[61]['shown_seq'], rows[61]['display']), ('https://example.com/', seq, 0, 61))
+        self.assertEqual(self.req('POST', '/api/screens/61/shown', {'seq': seq})[0], 200)
+        self.assertEqual({r['screen']: r for r in self.req('GET', '/api/screens')[1]}[61]['shown_seq'], seq)
+        for bad in ('file:///etc/passwd', 'javascript:alert(1)', 'example.com', 5):
+            self.assertEqual(self.req('POST', '/api/screens/61/open', {'url': bad})[0], 400, bad)
+        self.req('POST', '/api/screens/61/app', {'app': 'weather'})  # assigning an app clears the url
+        self.assertIsNone({r['screen']: r for r in self.req('GET', '/api/screens')[1]}[61]['url'])
+        self.req('POST', '/api/screens/61/app', {'app': None})
+        self.assertNotIn(61, {r['screen'] for r in self.req('GET', '/api/screens')[1]})
+        self.req('POST', '/api/screens/62/open', {'url': 'https://example.com/'})
+        self.assertEqual(json.load(open(os.path.join(self.st.data, 'opens.json')))['62']['url'], 'https://example.com/')
+        self.req('POST', '/api/screens/62/open', {'url': None})
+        self.assertNotIn(62, {r['screen'] for r in self.req('GET', '/api/screens')[1]})
 
     def test_health(self):
         st, d, _ = self.req('GET', '/health')

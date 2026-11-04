@@ -41,6 +41,27 @@ echo "page connected after ${i}s"
 sleep 6
 B=$($A "curl -s 127.0.0.1:57710/displays" | python3 -c "import json,sys; print(next(d['display'] for d in json.load(sys.stdin) if d['screen']==$ID))")
 R=$($A "osascript -l JavaScript -e 'ObjC.import(\"CoreGraphics\"); var r=\$.CGDisplayBounds($B); [r.origin.x,r.origin.y,r.size.width,r.size.height].join(\",\")'")
-$A "screencapture -x -R $R /tmp/pp-air-$ID.png 2>&1; ls -la /tmp/pp-air-$ID.png 2>&1; ps -o pid,args -p \$(pgrep -f 'profiles/screen-$ID' | head -1) | cut -c1-200"
-mkdir -p /tmp/pp-air && scp -q -o BatchMode=yes pinpin-air:/tmp/pp-air-$ID.png /tmp/pp-air/ 2>/dev/null && echo "capture: /tmp/pp-air/pp-air-$ID.png"
+W=$($A "cd ~/.local/share/pinpin-apps && /opt/homebrew/bin/python3 -c 'import apps_runner as r; print(\",\".join(map(str, r.window_bounds($ID))))'")
+echo "display $B bounds $R; window $W"
+python3 - "$R" "$W" <<'PY' || exit 1
+import sys
+dx, dy, dw, dh = map(float, sys.argv[1].split(',')); wx, wy, ww, wh = map(float, sys.argv[2].split(','))
+inside = dx - 1 <= wx and wx + ww <= dx + dw + 1 and dy - 1 <= wy and wy + wh <= dy + dh + 1
+big = ww * wh >= 0.8 * dw * dh
+print('window on its display:', inside, '- covers >= 80%:', big); sys.exit(0 if inside and big else 1)
+PY
+# the assistant's open_url path: navigate the same window, then back to the app
+seq=$(api "-X POST -H Content-Type:application/json -d '{\"url\": \"https://example.com/\"}' 127.0.0.1:57830/api/screens/$ID/open" | python3 -c "import json,sys; print(json.load(sys.stdin)['seq'])")
+ok=
+for i in $(seq 1 15); do
+  sh=$(api 127.0.0.1:57830/api/screens | python3 -c "import json,sys; print(next((r['shown_seq'] for r in json.load(sys.stdin) if r['screen']==$ID), 0))" 2>/dev/null)
+  [ "$sh" = "$seq" ] && { ok=1; break; }; sleep 1
+done
+[ -z "$ok" ] && { echo "open url: never shown"; exit 1; }
+sleep 2
+href=$($A "cd ~/.local/share/pinpin-apps && /opt/homebrew/bin/python3 -c 'import apps_runner as r; c=r.CDP(r.cdp_port($ID)); print(c.call(\"Runtime.evaluate\", {\"expression\": \"location.href\", \"returnByValue\": True})[\"result\"][\"value\"])'")
+echo "open url shown after ${i}s: $href"; [ "$href" = "https://example.com/" ] || exit 1
+api "-X POST -H Content-Type:application/json -d '{\"url\": null}' 127.0.0.1:57830/api/screens/$ID/open" >/dev/null; sleep 5
+c=$(api 127.0.0.1:57830/api/screens | python3 -c "import json,sys; print(next((r['clients'] for r in json.load(sys.stdin) if r['screen']==$ID), 0))")
+echo "back to the app: clients=$c"; [ "${c:-0}" -ge 1 ] || exit 1
 result=pass

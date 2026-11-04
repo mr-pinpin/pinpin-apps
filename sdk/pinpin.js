@@ -7,7 +7,8 @@
 //   pinpin.store.set(k, v)            or another screen showing the same app gets it back
 //   pinpin.fetch(url, opts)         fetch through the Mini proxy (hosts must be in manifest permissions.fetch)
 //   pinpin.fetchJSON(url)           the same, parsed; throws on HTTP errors
-//   pinpin.ask(prompt, {system, json})  -> {text, json?, stub?}: Claude via the assistant (permissions.ask)
+//   pinpin.ask(prompt, {system, json, model})  -> {text, json?, stub?}: Claude via the assistant (permissions.ask);
+//                                   model 'haiku' answers in seconds, the default (sonnet) takes 10-30 s
 //   pinpin.toast(text, ms)          a big transient message;  pinpin.status(text)  the small corner line
 //   pinpin.fit(el, {max, min})      shrink an element's font until it fits its box (long titles on small screens)
 // Dev: ?dev=1 adds a text box that feeds onVoice (try an app without the headset); ?say=a|b|c scripts phrases.
@@ -58,7 +59,7 @@
   P.ask = async (prompt, o = {}) => {
     const r = await fetch('/api/ask', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ app, screen, prompt, system: o.system, json: o.json }),
+      body: JSON.stringify({ app, screen, prompt, system: o.system, json: o.json, model: o.model }),
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) return { text: '', stub: true, error: d.error || ('HTTP ' + r.status) };

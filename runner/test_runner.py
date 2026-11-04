@@ -17,7 +17,13 @@ class Plan(unittest.TestCase):
                    {'screen': 2, 'app': 'recipes', 'display': 2},
                    {'screen': 3, 'app': None, 'display': 3},             # no app: no window
                    {'screen': 9, 'app': 'weather', 'display': 9}]        # no display yet: wait
-        self.assertEqual(r.plan(screens, DISPLAYS, BOUNDS, 1), {2: ('/screen/2', (3360, 25, 1920, 1175))})
+        self.assertEqual(r.plan(screens, DISPLAYS, BOUNDS, 1), {2: ('/screen/2', 0, (3360, 25, 1920, 1175))})
+
+    def test_opened_url_needs_no_app(self):
+        screens = [{'screen': 3, 'app': None, 'display': 3, 'url': 'https://example.com/', 'seq': 7},
+                   {'screen': 2, 'app': 'recipes', 'display': 2, 'url': None, 'seq': 0}]
+        self.assertEqual(r.plan(screens, DISPLAYS, BOUNDS, 1),
+                         {3: ('https://example.com/', 7, (1440, 25, 1920, 1175)), 2: ('/screen/2', 0, (3360, 25, 1920, 1175))})
 
     def test_never_main_display(self):
         d = [{'screen': 2, 'display': 1}]
@@ -32,6 +38,8 @@ class Plan(unittest.TestCase):
         self.assertIn('--window-position=3360,25', a)
         self.assertTrue(any(x.endswith('profiles/screen-2') for x in a))
         self.assertIn('--kiosk', r.chrome_args('http://m', 2, '/screen/2', (0, 0, 1, 1), 'kiosk'))
+        self.assertIn('--remote-debugging-port=9302', a)
+        self.assertIn('--app=https://example.com/', r.chrome_args('http://m', 2, 'https://example.com/', (0, 0, 1, 1)))
 
 
 if __name__ == '__main__':

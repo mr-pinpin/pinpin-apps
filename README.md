@@ -108,6 +108,6 @@ never committed.
 - [x] M3: starter apps: weather (open-meteo, no key, "weather in <city>") and kitchen recipes (voice ingredients → Claude or the built-in list, one step at a time)
 - [x] M4: the server on the Mini (LaunchAgent io.mr-pinpin.apps), with headless Chrome render checks of both apps (`tools/render_check.py`, and `check: true` on PUT)
 - [ ] M5: the runner on the laptop: an app window on a virtual display, streamed by the atlas, under the bench lock with air_smoke (`tools/air_test.sh`). Finding: Chrome started over ssh can't reach the GUI session, so the runner must be the Aqua LaunchAgent
-- [ ] M6: /api/ask forwarded to work-42's assistant (port 57840), and recipes answered by Claude
+- [x] M6: /api/ask forwarded to work-42's assistant (now the Air instance, 192.168.0.102:57840; the Mini instance when it's up). Recipes answered by Claude in 15–30 s, with built-in ideas shown at once
 - [ ] M7: headset dictation to an app screen (`/say`), with work-c4
-- [ ] M8: the assistant creates a new app end to end ("make me a timer app") and it appears on a screen
+- [ ] M8: the assistant creates a new app end to end ("make me a timer app") and it appears on a screen. Rehearsed through the API: `apps/timer` was made from docs/AUTHORING.md with `check: true`, rendered with no errors, and its voice worked

@@ -17,7 +17,10 @@
   POST /api/screens/<id>/app        {app: id|null} -> house.json "apps" section, that screen reloads
   POST /api/screens/<id>/say        {text} -> the page's pinpin.onVoice handlers
   POST /api/screens/<id>/reload
-  POST /api/ask                     {app, screen, prompt, system?, json?} -> {text, json?} (assistant, or the stub)
+  POST /api/screens/<id>/open       {url|null} the runner navigates that screen's window there (null: back to its app);
+                                    GET /api/screens shows url, seq and shown_seq (= seq once it is on screen)
+  POST /api/screens/<id>/shown      {seq} (the runner)
+  POST /api/ask                     {app, screen, prompt, system?, json?, model?} -> {text, json?} (assistant, or the stub)
   GET  /proxy?app=<app>&url=<url>   GET through the Mini, only to hosts in the app's permissions.fetch
 
 Stdlib only. The repo (--repo) is a git checkout of mr-pinpin/pinpin-apps; app data and secrets live in --data.
@@ -288,6 +291,29 @@ class State:
                 self.secrets = json.load(f)  # {"host": {"headers": {...}, "query": {...}}}, never in git
         except (OSError, ValueError):
             self.secrets = {}
+        # urls opened on screens by the assistant (POST /api/screens/<id>/open): {screen: {url, seq}}; the runner
+        # navigates the screen's window there and reports the seq it shows (POST /api/screens/<id>/shown)
+        self.opens_path = os.path.join(a.data, 'opens.json')
+        try:
+            with open(self.opens_path) as f:
+                self.opens = {int(k): v for k, v in json.load(f).items()}
+        except (OSError, ValueError):
+            self.opens = {}
+        self.shown = {}
+        self.opens_lock = threading.Lock()
+
+    def set_open(self, screen, url):
+        with self.opens_lock:
+            seq = int(time.time() * 1000)
+            if url:
+                self.opens[screen] = {'url': url, 'seq': seq}
+            elif self.opens.pop(screen, None) is None:
+                return None
+            tmp = self.opens_path + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(self.opens, f)
+            os.replace(tmp, self.opens_path)
+            return seq
 
     @property
     def assistant(self):
@@ -477,9 +503,13 @@ class Handler(BaseHTTPRequestHandler):
                         'display': src.get('screen') if src.get('kind') == 'mac-display' else None,
                         'w_m': s.get('w'), 'h_m': s.get('h'), 'clients': st.hub.count(str(sid))})
             seen.add(sid)
-        for sid, a in mp.items():  # assigned before the headset placed it
+        for sid in sorted(set(mp) | set(st.opens)):  # assigned or opened before the headset placed it
             if sid not in seen:
-                out.append({'screen': sid, 'app': a, 'role': None, 'on': 0, 'display': sid, 'clients': st.hub.count(str(sid))})
+                out.append({'screen': sid, 'app': mp.get(sid), 'role': None, 'on': 0, 'display': sid, 'clients': st.hub.count(str(sid))})
+        for r in out:
+            o = st.opens.get(r['screen'])
+            r['url'], r['seq'] = (o['url'], o['seq']) if o else (None, 0)
+            r['shown_seq'] = st.shown.get(r['screen'], 0)
         return sorted(out, key=lambda r: r['screen'] if isinstance(r['screen'], int) else 0)
 
     def index(self):
@@ -625,7 +655,7 @@ class Handler(BaseHTTPRequestHandler):
             if m is not None and not (m.get('permissions') or {}).get('ask'):
                 return self.send(403, {'error': f'{d["app"]} has no ask permission'})
             try:
-                return self.send(200, st.assistant.ask({k: d[k] for k in ('app', 'screen', 'prompt', 'system', 'json') if k in d}))
+                return self.send(200, st.assistant.ask({k: d[k] for k in ('app', 'screen', 'prompt', 'system', 'json', 'model') if k in d}))
             except Exception as e:
                 return self.send(502, {'error': f'assistant: {e}', 'stub': True})
         if parts[:2] == ['api', 'apps'] and len(parts) == 4 and parts[3] == 'rollback' and parts[2] in st.repo.ids():
@@ -648,6 +678,7 @@ class Handler(BaseHTTPRequestHandler):
                     rev = st.house.assign(sid, a)
                 except Exception as e:
                     return self.send(502, {'error': str(e)})
+                st.set_open(sid, None)  # the screen goes back to showing its app
                 st.hub.send(str(sid), 'reload', {'why': 'app changed'})
                 return self.send(200, {'screen': sid, 'app': a, 'house_rev': rev})
             if what == 'say':
@@ -658,6 +689,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200 if n else 404, {'screen': sid, 'delivered': n, 'app': st.house.mapping().get(sid)})
             if what == 'reload':
                 return self.send(200, {'screen': sid, 'delivered': st.hub.send(str(sid), 'reload', {'why': 'asked'})})
+            if what == 'open':
+                url = d.get('url')
+                if url is not None and not (isinstance(url, str) and len(url) < 4000 and
+                                            urllib.parse.urlparse(url).scheme in ('http', 'https') and urllib.parse.urlparse(url).netloc):
+                    return self.send(400, {'error': 'url: an http(s) URL, or null to return to the app'})
+                seq = st.set_open(sid, url)
+                return self.send(200, {'screen': sid, 'url': url, 'seq': seq or 0})
+            if what == 'shown':
+                if not isinstance(d.get('seq'), int):
+                    return self.send(400, {'error': 'seq: int'})
+                st.shown[sid] = d['seq']
+                return self.send(200, {'screen': sid, 'shown_seq': d['seq']})
         return self.send(404, {'error': 'not found'})
 
 
