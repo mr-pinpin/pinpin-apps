@@ -74,13 +74,15 @@ async function load() {
     '&timezone=auto&forecast_days=6&temperature_unit=' + (cfg.units === 'fahrenheit' ? 'fahrenheit' : 'celsius');
   try {
     const w = await pinpin.fetchJSON(u);
+    if (w._stale) throw new Error('stale');  // the Mini served its last copy: the internet is down
     w.fetched = Date.now(); w.place = cfg.place;
     pinpin.store.set('last', w);
     render(w);
+    pinpin.offline(false);
   } catch (e) {
     const last = pinpin.store.get('last');
-    if (last && last.place === cfg.place) { render(last); pinpin.status('offline · from ' + hhmm(new Date(last.fetched))); }
-    else { $('cond').textContent = 'no weather yet (' + e.message + ')'; }
+    if (last && last.place === cfg.place) { render(last); pinpin.offline(true, 'offline · ' + hhmm(new Date(last.fetched))); }
+    else { $('cond').textContent = 'No weather yet: offline'; pinpin.offline(true); }
   }
 }
 

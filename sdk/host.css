@@ -1,0 +1,6 @@
+/* host.css: the trusted page around an app (host.js). The app fills the window in its sandboxed frame. */
+html, body { margin: 0; height: 100%; background: #0d1117; overflow: hidden; cursor: none; }
+#app { border: 0; width: 100%; height: 100%; display: block; background: #0d1117; }
+.host-dot { position: fixed; right: 0.6vmin; top: 0.6vmin; width: 1.2vmin; height: 1.2vmin; border-radius: 50%; background: #ff6b6b; z-index: 5; }
+.host-dev { position: fixed; left: 0; right: 0; bottom: 0; padding: 0.6vmin; background: #000c; z-index: 20; }
+.host-dev input { width: 100%; box-sizing: border-box; font: 600 2.4vmin -apple-system, sans-serif; padding: 0.6vmin 1vmin; cursor: text; }

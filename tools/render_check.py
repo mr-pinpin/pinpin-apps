@@ -4,7 +4,11 @@ page, and a screenshot. It can also speak to the app (pinpin._voice). It runs on
 only, with a minimal WebSocket client for the DevTools protocol.
 
   python3 tools/render_check.py http://127.0.0.1:57830/app/recipes/ --say "eggs, tomatoes" --say "recipe 1" \
-      --wait 4 --shot /tmp/recipes.png [--size 1920x1200] [--expect "Shakshuka"]
+      --wait 4 --shot /tmp/recipes.png [--size 1920x1200] [--expect "Shakshuka"] [--fail '*/proxy*']
+
+Sandboxed: this Chrome reaches only the apps server it was pointed at (every other host, the LAN and other local ports
+go to a dead proxy), so an app under test can't touch the house. --fail PATTERN makes matching requests fail (e.g.
+'*/proxy*' = the internet is down, '*/api/ask*' = the assistant is down) to check how an app degrades.
 
 Exit 0 when there were no JS exceptions (and every --expect text is on the page), else 1. Prints JSON.
 """
@@ -19,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 
 CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
@@ -61,7 +66,8 @@ class WS:
 
     def send(self, method, params=None, wait=True):
         self.id += 1
-        msg = json.dumps({'id': self.id, 'method': method, 'params': params or {}}).encode()
+        mine = self.id  # event() may send while we wait, which moves self.id
+        msg = json.dumps({'id': mine, 'method': method, 'params': params or {}}).encode()
         mask = os.urandom(4)
         n = len(msg)
         hdr = bytes([0x81]) + (bytes([0x80 | n]) if n < 126 else bytes([0x80 | 126]) + struct.pack('>H', n) if n < 65536
@@ -71,19 +77,25 @@ class WS:
             return None
         while True:
             m = self.recv()
-            if m.get('id') == self.id:
+            if m.get('id') == mine:
                 return m.get('result', m.get('error'))
-            self.events.append(m)
+            if 'id' not in m:
+                self.event(m)
 
     def pump(self, seconds):
         end = time.time() + seconds
         self.s.settimeout(0.2)
         while time.time() < end:
             try:
-                self.events.append(self.recv())
+                self.event(self.recv())
             except (socket.timeout, TimeoutError):
                 pass
         self.s.settimeout(30)
+
+    def event(self, m):
+        self.events.append(m)
+        if m.get('method') == 'Fetch.requestPaused':  # --fail: this request "loses the network"
+            self.send('Fetch.failRequest', {'requestId': m['params']['requestId'], 'errorReason': 'InternetDisconnected'}, wait=False)
 
 
 def main():
@@ -94,12 +106,17 @@ def main():
     ap.add_argument('--shot', default='')
     ap.add_argument('--size', default='1920x1200')
     ap.add_argument('--expect', action='append', default=[])
+    ap.add_argument('--fail', action='append', default=[], help='URL pattern (CDP Fetch syntax) to fail')
+    ap.add_argument('--no-sandbox-net', action='store_true', help='let this Chrome reach the network freely')
     a = ap.parse_args()
     w, h = (int(x) for x in a.size.split('x'))
     prof = tempfile.mkdtemp(prefix='pp-render-')
     port = 9400 + os.getpid() % 500
+    target = urllib.parse.urlparse(a.url)
+    net = [] if a.no_sandbox_net else ['--proxy-server=http://127.0.0.1:9',  # nothing listens there: requests fail
+                                       f'--proxy-bypass-list={target.hostname}:{target.port or 80};<-loopback>']
     p = subprocess.Popen([CHROME, '--headless=new', f'--remote-debugging-port={port}', f'--user-data-dir={prof}',
-                          f'--window-size={w},{h}', '--hide-scrollbars', '--no-first-run', '--use-mock-keychain', 'about:blank'],
+                          f'--window-size={w},{h}', '--hide-scrollbars', '--no-first-run', '--use-mock-keychain', *net, 'about:blank'],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         for _ in range(50):
@@ -112,13 +129,26 @@ def main():
         ws = WS(page['webSocketDebuggerUrl'])
         ws.send('Runtime.enable'); ws.send('Page.enable'); ws.send('Log.enable')
         ws.send('Emulation.setDeviceMetricsOverride', {'width': w, 'height': h, 'deviceScaleFactor': 1, 'mobile': False})
-        ws.send('Page.navigate', {'url': a.url})
+        if a.fail:
+            ws.send('Fetch.enable', {'patterns': [{'urlPattern': x} for x in a.fail]})
+        top = ws.send('Page.navigate', {'url': a.url}).get('frameId')
         ws.pump(a.wait)
         for t in a.say:
-            ws.send('Runtime.evaluate', {'expression': f'window.pinpin && pinpin._voice({json.dumps(t)}, {{check: true}})'})
+            ws.send('Runtime.evaluate', {'expression': f'(window.pinpinHost || window.pinpin) && (window.pinpinHost ? pinpinHost.voice : pinpin._voice)({json.dumps(t)}, {{check: true}})'})
             ws.pump(a.wait)
-        text = ws.send('Runtime.evaluate', {'expression': 'document.body ? document.body.innerText : ""', 'returnByValue': True})
-        text = (text or {}).get('result', {}).get('value', '')
+        # the visible text: the top page's plus every frame's (apps run in a sandboxed iframe)
+        texts = []
+        ctxs = [e['params']['context'] for e in ws.events if e.get('method') == 'Runtime.executionContextCreated']
+        dead = {e['params']['executionContextId'] for e in ws.events if e.get('method') == 'Runtime.executionContextDestroyed'}
+        for c in ctxs:
+            aux = c.get('auxData', {})
+            if c['id'] in dead or not aux.get('isDefault'):
+                continue
+            r = ws.send('Runtime.evaluate', {'expression': 'document.body ? document.body.innerText : ""', 'returnByValue': True, 'contextId': c['id']})
+            v = ((r or {}).get('result') or {}).get('value')
+            if v:
+                texts.append(v) if aux.get('frameId') != top else texts.insert(0, v)
+        text = '\n'.join(texts)
         if a.shot:
             shot = ws.send('Page.captureScreenshot', {'format': 'png'})
             with open(a.shot, 'wb') as f:

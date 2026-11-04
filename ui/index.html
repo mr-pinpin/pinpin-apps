@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PinPin apps</title>
+<style>
+  :root { --bg: #0d1117; --card: #161c26; --line: #2a3342; --fg: #f4f6fa; --muted: #9aa6b8; --accent: #ffb84d; --good: #5fd38d; --bad: #ff6b6b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif; padding: 16px; max-width: 1200px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 4px 0 2px; } h2 { font-size: 17px; margin: 22px 0 10px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .screens { display: grid; gap: 10px; }
+  .scr { display: grid; grid-template-columns: 44px 1fr auto; gap: 12px; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .scr img { width: 44px; height: 44px; border-radius: 9px; }
+  .scr .ph { width: 44px; height: 44px; border-radius: 9px; border: 2px dashed var(--line); }
+  .scr b { font-size: 16px; } .live { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--line); margin-left: 6px; vertical-align: middle; }
+  .live.on { background: var(--good); }
+  select { font: inherit; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-width: 150px; }
+  .gallery { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .app { background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+  .app .thumb { aspect-ratio: 16 / 10; background: #000 center/cover no-repeat; display: block; position: relative; }
+  .app .thumb span { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 13px; }
+  .app .body { padding: 10px 12px 12px; display: grid; grid-template-columns: 40px 1fr; gap: 4px 10px; }
+  .app .body img { width: 40px; height: 40px; border-radius: 8px; grid-row: span 2; }
+  .app .name { font-weight: 700; font-size: 16px; } .app .desc { color: var(--muted); font-size: 13px; grid-column: 1 / -1; }
+  .app .meta { color: var(--muted); font-size: 12px; grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .app .on { color: var(--accent); font-size: 12px; }
+  a { color: var(--accent); text-decoration: none; }
+  .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--accent); color: #111; font-weight: 700; padding: 8px 16px; border-radius: 8px; opacity: 0; transition: .2s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+  .err { color: var(--bad); }
+</style>
+</head>
+<body>
+<h1>PinPin apps</h1>
+<div class="sub">Small apps on the wall screens. Pick what each screen shows; ask Claude on a screen to make a new one.</div>
+
+<h2>Screens</h2>
+<div class="screens" id="screens"><div class="sub">Loading…</div></div>
+
+<h2>Apps</h2>
+<div class="gallery" id="gallery"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let apps = [], toastT;
+function toast(t) { const e = $('toast'); e.textContent = t; e.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => e.classList.remove('show'), 2200); }
+function ago(iso) {
+  if (!iso) return '';
+  const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' d ago';
+}
+
+async function assign(screen, app) {
+  const r = await fetch('/api/screens/' + screen + '/app', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ app: app || null }) });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) toast(app ? `${(apps.find((a) => a.id === app) || {}).name || app} on screen ${screen}` : `Screen ${screen} cleared`);
+  else toast('Could not save: ' + (d.error || r.status));
+  load();
+}
+
+function screens(list) {
+  const byId = Object.fromEntries(apps.map((a) => [a.id, a]));
+  const rows = list.filter((s) => s.role !== 'main');  // the main screen streams the game / Atlas
+  if (!rows.length) return '<div class="sub">No extra screens in the house yet. Place one from the headset.</div>';
+  return rows.map((s) => {
+    const a = byId[s.app];
+    const opts = ['<option value="">— none —</option>'].concat(apps.map((x) => `<option value="${esc(x.id)}"${x.id === s.app ? ' selected' : ''}>${esc(x.name)}</option>`)).join('');
+    return `<div class="scr">${a ? `<img src="${a.icon}" alt="">` : '<div class="ph"></div>'}
+      <div><b>Screen ${esc(s.screen)}</b><span class="live${s.clients ? ' on' : ''}" title="${s.clients ? 'showing now' : 'not on'}"></span>
+        <div class="sub">${s.url ? 'web page: ' + esc(s.url) : a ? esc(a.name) : 'nothing assigned'}${s.role ? '' : ' · not placed in the headset yet'}</div></div>
+      <select data-screen="${esc(s.screen)}" aria-label="App for screen ${esc(s.screen)}">${opts}</select></div>`;
+  }).join('');
+}
+
+function gallery() {
+  return apps.map((a) => `<div class="app">
+    <a class="thumb" href="/app/${esc(a.id)}/?dev=1" target="_blank" title="Open a live preview (type to talk to it)" style="background-image:url('/api/apps/${esc(a.id)}/thumb.png?c=${esc(a.commit)}')"><span class="ld">rendering…</span></a>
+    <div class="body"><img src="${a.icon}" alt=""><div class="name">${esc(a.name)}</div>
+      <div class="on">${a.screens.length ? 'on screen ' + a.screens.join(', ') : ''}</div>
+      <div class="desc">${esc(a.description)}</div>
+      <div class="meta" title="${esc(a.last && a.last.subject)}">${a.last ? 'updated ' + ago(a.last.when) + ' · ' + esc(a.last.subject.replace(/^[^:]+: /, '')) : ''}</div></div></div>`).join('');
+}
+
+async function load() {
+  try {
+    const [a, s] = await Promise.all([fetch('/api/apps').then((r) => r.json()), fetch('/api/screens').then((r) => r.json())]);
+    apps = a;
+    $('screens').innerHTML = screens(s);
+    if (!$('gallery').dataset.done || $('gallery').dataset.done !== apps.map((x) => x.commit).join()) {
+      $('gallery').innerHTML = gallery(); $('gallery').dataset.done = apps.map((x) => x.commit).join();
+      document.querySelectorAll('.thumb').forEach((t) => {  // hide "rendering…" once the image is there
+        const img = new Image(); img.onload = () => t.querySelector('.ld').remove(); img.src = t.style.backgroundImage.slice(5, -2);
+      });
+    }
+    document.querySelectorAll('select[data-screen]').forEach((e) => e.onchange = () => assign(e.dataset.screen, e.value));
+  } catch (e) { $('screens').innerHTML = '<div class="err">The apps server is not answering.</div>'; }
+}
+load(); setInterval(load, 15000);
+</script>
+</body>
+</html>

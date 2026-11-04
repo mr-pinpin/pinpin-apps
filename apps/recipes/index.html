@@ -131,7 +131,8 @@ async function suggest(more) {
       .map((x) => ({ title: String(x.title), minutes: +x.minutes || 0, uses: (x.uses || []).map(String), missing: (x.missing || []).map(String), steps: x.steps.map(String) }));
     source = 'ideas: Claude';
   }
-  if (!out || !out.length) { out = quick; source = 'ideas: built-in list' + (r.stub ? '' : ' (Claude did not answer)'); }
+  if (!out || !out.length) { out = quick; source = 'ideas: built-in list' + (r.error ? ' · Claude is offline' : r.stub ? '' : ' (Claude did not answer)'); }
+  pinpin.offline(!!r.error, 'Claude offline');
   asking = 0;
   if (more && !out.length) { pinpin.toast('No more ideas with these'); render(); return; }
   if (S.view === 'recipe') { render(); return; }  // already cooking from a quick idea: don't pull the page away

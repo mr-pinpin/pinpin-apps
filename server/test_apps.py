@@ -7,12 +7,14 @@ import http.client
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -68,6 +70,9 @@ class Upstream(BaseHTTPRequestHandler):
 
     def do_GET(self):
         type(self).hits += 1
+        if self.path == '/redirect':
+            self.send_response(302); self.send_header('Location', 'http://10.9.9.9/secret'); self.send_header('Content-Length', '0')
+            self.end_headers(); return
         b = json.dumps({'path': self.path, 'key': self.headers.get('X-Key')}).encode()
         self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(b)))
         self.end_headers(); self.wfile.write(b)
@@ -102,10 +107,12 @@ class Apps(unittest.TestCase):
         cls.up = bg(ThreadingHTTPServer(('127.0.0.1', 0), Upstream))
         data = os.path.join(cls.tmp, 'data'); os.makedirs(data)
         cls.up_host = f'127.0.0.1:{cls.up.server_address[1]}'
+        with open(os.path.join(data, 'proxy-private.json'), 'w') as f:
+            json.dump(['127.0.0.1'], f)  # the fake upstream is local; everything else private stays refused
         with open(os.path.join(data, 'secrets.json'), 'w') as f:
             json.dump({'127.0.0.1': {'headers': {'X-Key': 'sekret'}}}, f)
         a = apps_server.main_args(['--repo', repo, '--data', data, '--port', '0', '--bind', '127.0.0.1', '--poll', '0.3',
-                                   '--house', f'http://127.0.0.1:{cls.house.server_address[1]}'])
+                                   '--house', f'http://127.0.0.1:{cls.house.server_address[1]}', '--io-timeout', '1'])
         cls.srv, cls.st = apps_server.serve(a)
         bg(cls.srv)
         cls.port = cls.srv.server_address[1]
@@ -120,7 +127,9 @@ class Apps(unittest.TestCase):
     def req(self, method, path, body=None, headers=None):
         c = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
         b = json.dumps(body).encode() if isinstance(body, (dict, list)) else body
-        c.request(method, path, body=b, headers=headers or ({'Content-Type': 'application/json'} if b else {}))
+        if headers is None:  # by default: what host.js sends
+            headers = {'X-PinPin': '1', **({'Content-Type': 'application/json'} if b is not None else {})}
+        c.request(method, path, body=b, headers=headers)
         r = c.getresponse(); data = r.read(); c.close()
         try:
             return r.status, json.loads(data), r
@@ -174,13 +183,20 @@ class Apps(unittest.TestCase):
         self.assertEqual(st, 200)
         self.assertTrue({'weather', 'recipes'} <= {a['id'] for a in apps})
 
-    def test_preview_injects_sdk(self):
+    def test_preview_shell_and_sandboxed_frame(self):
         st, html, r = self.req('GET', '/app/weather/')
         self.assertEqual(st, 200)
+        self.assertIn('<iframe id="app" sandbox="allow-scripts"', html)  # no allow-same-origin: an opaque origin
+        self.assertIn('<script src="/sdk/host.js" data-app="weather" data-screen="preview:weather">', html)
+        self.assertEqual(r.getheader('Cache-Control'), 'no-store')
+        st, html, r = self.req('GET', '/frame/weather/?screen=preview:weather')
         self.assertIn('<script src="/sdk/pinpin.js" data-app="weather" data-screen="preview:weather">', html)
         self.assertIn('<base href="/apps/weather/">', html)
-        self.assertEqual(r.getheader('Cache-Control'), 'no-store')
-        for p in ('/sdk/pinpin.js', '/sdk/pinpin.css', '/apps/recipes/catalogue.js', '/apps/weather/manifest.json'):
+        self.assertIn('sandbox allow-scripts', r.getheader('Content-Security-Policy'))  # sandboxed even opened directly
+        self.assertIn("connect-src 'none'", r.getheader('Content-Security-Policy'))
+        st, html, r = self.req('GET', '/frame/weather/?screen=%22%3E%3Cscript%3Ealert(1)%3C/script%3E')
+        self.assertNotIn('<script>alert(1)', html)
+        for p in ('/sdk/pinpin.js', '/sdk/pinpin.css', '/sdk/host.js', '/sdk/host.css', '/apps/recipes/catalogue.js', '/apps/weather/manifest.json'):
             self.assertEqual(self.req('GET', p)[0], 200, p)
 
     def test_path_traversal_and_bad_ids(self):
@@ -363,14 +379,15 @@ class Apps(unittest.TestCase):
 
     def test_idle_screen_and_delete(self):
         st, html, _ = self.req('GET', '/screen/55')
-        self.assertIn('No app here yet', html)
+        self.assertIn('data-app="_idle"', html)
+        self.assertIn('No app here yet', self.req('GET', '/frame/_idle/?screen=55')[1])
         self.req('PUT', '/api/apps/tmpapp', {'files': self.app('tmpapp')})
         self.req('POST', '/api/screens/56/app', {'app': 'tmpapp'})
         st, d, _ = self.req('DELETE', '/api/apps/tmpapp?message=test')
         self.assertEqual(st, 200, d)
         self.assertNotIn('tmpapp', [a['id'] for a in self.req('GET', '/api/apps')[1]])
         self.assertNotIn(56, {r['screen'] for r in self.req('GET', '/api/screens')[1]})
-        self.assertIn('No app here yet', self.req('GET', '/screen/56')[1])
+        self.assertIn('data-app="_idle"', self.req('GET', '/screen/56')[1])
 
     def test_assistant_url_file(self):
         with open(os.path.join(self.st.data, 'assistant-url'), 'w') as f:
@@ -425,6 +442,55 @@ class Apps(unittest.TestCase):
         for a in cat:
             if a in ('weather', 'recipes', 'timer', 'shopping', 'clock', 'notes'):
                 self.assertIn('icon.svg', os.listdir(os.path.join(ROOT, 'apps', a)), f'{a}: starter apps ship an icon')
+
+    def test_apps_cannot_call_the_api_themselves(self):
+        frame = {'Origin': 'null', 'Content-Type': 'application/json', 'X-PinPin': '1'}  # what a sandboxed frame sends
+        for method, path, body in (('POST', '/api/screens/2/app', {'app': 'weather'}), ('PUT', '/api/apps/weather/data', {}),
+                                   ('PUT', '/api/apps/weather', {'files': {}}), ('POST', '/api/ask', {'prompt': 'x'}),
+                                   ('GET', '/api/apps/recipes/data', None), ('GET', '/proxy?app=weather&url=https://api.open-meteo.com/', None),
+                                   ('DELETE', '/api/apps/weather', None)):
+            self.assertEqual(self.req(method, path, body, headers=frame)[0], 403, path)
+        # a no-cors request (no custom header) can't read another app's data or use the proxy or ask
+        for path in ('/api/apps/recipes/data', '/proxy?app=weather&url=https://api.open-meteo.com/'):
+            self.assertEqual(self.req('GET', path, headers={})[0], 403, path)
+        # a blind form-style write (text/plain, no preflight) is refused
+        st, d, _ = self.req('POST', '/api/screens/2/app', b'{"app": "weather"}', headers={'Content-Type': 'text/plain'})
+        self.assertEqual(st, 415)
+        self.assertEqual(self.req('GET', '/api/apps', headers={})[2].getheader('X-Content-Type-Options'), 'nosniff')
+
+    def test_proxy_hardening(self):
+        self.req('PUT', '/api/apps/net2', {'files': self.app('net2', perms={'fetch': ['api.open-meteo.com', self.up_host, 'localhost', '10.1.2.3']})})
+        for url, code in (('http://api.open-meteo.com@evil.example/', 403),          # userinfo trick: the real host is not allowed
+                          ('http://api.open-meteo.com.evil.example/', 403),           # suffix trick
+                          ('http://localhost/', 403), ('http://10.1.2.3/', 403),     # listed, but LAN/loopback: never
+                          ('http://user:pw@api.open-meteo.com/', 400)):
+            self.assertEqual(self.req('GET', '/proxy?app=net2&url=' + urllib.parse.quote(url, safe=''))[0], code, url)
+        # a redirect from an allowed host is passed back, not followed
+        Upstream.hits = 0
+        st, d, r = self.req('GET', '/proxy?app=net2&url=' + urllib.parse.quote(f'http://{self.up_host}/redirect', safe=''))
+        self.assertEqual(st, 302); self.assertEqual(Upstream.hits, 1)
+
+    def test_upload_limits(self):
+        sk = socket.create_connection(('127.0.0.1', self.port), timeout=10)  # announced as 13 MB: refused before reading it
+        sk.sendall(b'PUT /api/apps/big HTTP/1.0\r\nContent-Type: application/json\r\nContent-Length: 13631488\r\n\r\n{')
+        self.assertIn(b' 413 ', sk.recv(200)); sk.close()
+        # a client that stalls mid-upload is dropped after the io timeout (1 s in the tests), not held forever
+        sk = socket.create_connection(('127.0.0.1', self.port), timeout=10)
+        sk.sendall(b'PUT /api/apps/slow HTTP/1.0\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{"files":')
+        t0 = time.time(); sk.settimeout(10)
+        try:
+            sk.recv(100)
+        except OSError:
+            pass
+        self.assertLess(time.time() - t0, 5)
+        sk.close()
+        self.assertEqual(self.req('GET', '/health')[0], 200)  # still serving
+
+    def test_control_page(self):
+        st, html, r = self.req('GET', '/')
+        self.assertEqual(st, 200); self.assertIn('<title>PinPin apps</title>', html)
+        cat = self.req('GET', '/api/apps')[1]
+        self.assertTrue(all('last' in a and 'commit' in a for a in cat))
 
     def test_authoring_guide(self):
         st, text, r = self.req('GET', '/api/authoring')

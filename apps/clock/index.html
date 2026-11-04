@@ -46,10 +46,12 @@ async function loadSun() {
     w.daily.sunrise.forEach((t) => ev.push({ at: t * 1000, kind: 'rise' }));
     w.daily.sunset.forEach((t) => ev.push({ at: t * 1000, kind: 'set' }));
     sun = { tz: w.timezone, events: ev.sort((a, b) => a.at - b.at) };
-    pinpin.store.set('sun', Object.assign({ place: cfg.place }, sun));
+    pinpin.store.set('sun', Object.assign({ place: cfg.place, fetched: Date.now() }, sun));
+    pinpin.offline(false);
   } catch (e) {
     const s = pinpin.store.get('sun');
     if (s && s.place === cfg.place) sun = s;
+    pinpin.offline(true);  // the time is local and keeps going; sunrise/sunset come from the last good copy
   }
   tick();
 }

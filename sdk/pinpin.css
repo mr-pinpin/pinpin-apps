@@ -39,7 +39,5 @@ p { margin: 0; }
   max-width: 90vw; text-align: center; pointer-events: none; z-index: 10; }
 .pp-toast.pp-show { opacity: 1; transform: translate(-50%, 0); }
 .pp-status { position: fixed; right: 0.8rem; bottom: 0.25rem; font-size: 0.45rem; color: var(--pp-muted); }
-.pp-dot { position: fixed; right: 0.3rem; top: 0.3rem; width: 0.25rem; height: 0.25rem; border-radius: 50%; background: var(--pp-good); }
-.pp-dot.pp-off { background: var(--pp-bad); }
-.pp-dev { position: fixed; left: 0; right: 0; bottom: 0; padding: 0.2rem; background: #000c; z-index: 20; }
-.pp-dev input { width: 100%; font: inherit; font-size: 0.6rem; padding: 0.15rem 0.3rem; cursor: text; }
+.pp-offline { position: fixed; right: 0.9rem; top: 0.25rem; font-size: 0.45rem; font-weight: 800; color: #111;
+  background: var(--pp-accent); border-radius: 0.3rem; padding: 0.02rem 0.3rem; z-index: 6; }

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """pinpin-apps server (Mini, port 57830): serves the mini-apps to the wall screens and lets the assistant evolve them.
 
-  GET  /screen/<id>                 the app house.json maps to screen <id>, SDK injected (the runner's window URL)
+  GET  /                            the control page (ui/index.html): app gallery, screens and their apps
+  GET  /screen/<id>                 the app house.json maps to screen <id>: host.js + the app in a sandboxed iframe
+                                    (the runner's window URL);  GET /frame/<app>/  the app document itself
   GET  /app/<app>/                  preview of an app with the SDK, screen "preview"
   GET  /apps/<app>/<path>           raw app files;  GET /sdk/<file>  the SDK
   GET  /events?screen=<id>          server-sent events to the page: reload, voice {text}
@@ -15,6 +17,7 @@
                                     screens reload; check: render it in headless Chrome, report JS errors + text
   DELETE /api/apps/<app>            removes the folder (one commit) and unassigns its screens
   GET  /api/apps/<app>/history      [{commit, when, subject}]
+  GET  /api/apps/<app>/thumb.png    a 960x600 render of the app (cached per commit, refreshed every 10 min)
   POST /api/apps/<app>/rollback     {commit} -> folder as at that commit, as a new commit
   GET|PUT /api/apps/<app>/data      the app's stored JSON (SDK pinpin.store), outside git
   GET  /api/screens                 [{screen, app, display, clients, w, h}] from house.json
@@ -31,11 +34,13 @@ Stdlib only. The repo (--repo) is a git checkout of mr-pinpin/pinpin-apps; app d
 """
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import queue
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import sys
@@ -307,6 +312,22 @@ class State:
             self.opens = {}
         self.shown = {}
         self.opens_lock = threading.Lock()
+        try:
+            with open(os.path.join(a.data, 'proxy-private.json')) as f:
+                self.private_ok = set(json.load(f))
+        except (OSError, ValueError):
+            self.private_ok = set()
+
+    def public_host(self, hostname):
+        """True when every address the name resolves to is on the internet (not loopback, the LAN or link-local), or
+        the host is explicitly allowed in <data>/proxy-private.json (["host", ...]; the tests use it)."""
+        if hostname in self.private_ok:
+            return True
+        try:
+            addrs = {i[4][0] for i in socket.getaddrinfo(hostname, None)}
+        except OSError:
+            return True  # unresolvable: the fetch itself will fail
+        return all(ipaddress.ip_address(a.split('%')[0]).is_global for a in addrs)
 
     def set_open(self, screen, url):
         with self.opens_lock:
@@ -420,6 +441,33 @@ def icon_png(st, app_id, size):
         return f.read()
 
 
+THUMB_TTL = 600
+_thumb_lock = threading.Lock()
+
+
+def thumb_png(st, app_id, port):
+    """A 960x600 screenshot of the app's preview (it shows the app's current data), by headless Chrome on this machine;
+    cached per commit and redone after THUMB_TTL so lists and notes stay roughly current."""
+    import render_check as rc
+    if not os.path.exists(rc.CHROME):
+        return None
+    d = os.path.join(st.data, 'thumbs'); os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, f'{app_id}-{(st.repo.head(app_id) or "x")[:12]}.png')
+    with _thumb_lock:  # one Chrome at a time: the Mini also renders and streams
+        if not (os.path.exists(path) and time.time() - os.path.getmtime(path) < THUMB_TTL):
+            tool = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools', 'render_check.py')
+            try:
+                subprocess.run([sys.executable, tool, f'http://127.0.0.1:{port}/app/{app_id}/', '--wait', '3',
+                                '--size', '960x600', '--shot', path + '.tmp'], capture_output=True, timeout=60)
+                os.replace(path + '.tmp', path)
+            except Exception as e:
+                log(f'thumb {app_id}: {e}')
+                if not os.path.exists(path):
+                    return None
+    with open(path, 'rb') as f:
+        return f.read()
+
+
 def render_check(port, app_id, say):
     """tools/render_check.py on this machine (needs Chrome): JS errors and the visible text of the app's preview."""
     tool = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools', 'render_check.py')
@@ -436,6 +484,15 @@ def render_check(port, app_id, say):
         return {'error': f'render check failed: {e}'}
 
 
+SHELL = """<!doctype html><html><head><meta charset="utf-8"><title>{title}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/sdk/host.css"></head>
+<body><iframe id="app" sandbox="allow-scripts" allow="autoplay" title="{title}"></iframe>
+<script src="/sdk/host.js" data-app="{app}" data-screen="{screen}"></script></body></html>"""
+
+# the frame's own CSP: even opened directly (not in the shell), an app page is sandboxed to an opaque origin
+FRAME_CSP = "sandbox allow-scripts; default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'none'"
+
+
 def inject(html, app_id, screen):
     tag = (f'<base href="/apps/{app_id}/"><meta name="viewport" content="width=device-width,initial-scale=1">'
            f'<link rel="stylesheet" href="/sdk/pinpin.css">'
@@ -444,9 +501,22 @@ def inject(html, app_id, screen):
     return html[:m.end()] + tag + html[m.end():] if m else tag + html
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+
+NO_REDIRECT = urllib.request.build_opener(_NoRedirect)
+
+
+def html_escape(s):
+    return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.0'
     st = None  # State
+    timeout = 30  # seconds per socket read/write: a slow or stalled upload is dropped, never holds a thread forever
 
     def log_message(self, fmt, *a):
         if os.environ.get('PINPIN_APPS_VERBOSE'):
@@ -459,13 +529,34 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')  # JSON is never run as a script by a curious app
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
         if self.command != 'HEAD':
             self.wfile.write(body)
 
+    def from_host(self):
+        """App frames (opaque origin) may not call the API themselves: they must ask their host page. A request from a
+        sandboxed frame carries Origin: null; one without our X-PinPin header can't come from host.js."""
+        if self.headers.get('Origin') == 'null':
+            self.send(403, {'error': 'apps call the API through their host page (pinpin.*), not directly'}); return False
+        if self.headers.get('X-PinPin') != '1':
+            self.send(403, {'error': 'X-PinPin: 1 required'}); return False
+        return True
+
+    def writable(self):
+        """Every write: JSON only (a cross-origin form or no-cors fetch can't send that without a preflight we never
+        answer) and never from an app frame."""
+        if self.headers.get('Origin') == 'null':
+            self.send(403, {'error': 'apps can not call the API directly'}); return False
+        if not (self.headers.get('Content-Type') or '').startswith('application/json'):
+            self.send(415, {'error': 'Content-Type: application/json required'}); return False
+        return True
+
     def json_body(self):
+        if not self.writable():
+            return None
         n = int(self.headers.get('Content-Length') or 0)
         if n > MAX_BODY:
             self.send(413, {'error': 'body too large'}); return None
@@ -486,13 +577,26 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, body=b, ctype=MIME.get(os.path.splitext(path)[1].lower(), 'application/octet-stream'))
 
     def page(self, app_id, screen):
+        """The trusted shell: host.js plus the app in a sandboxed iframe (/frame/<app>/)."""
         st = self.st
         if app_id is None or not os.path.isfile(os.path.join(st.repo.apps, app_id, 'index.html')):
-            html = inject(IDLE.format(screen=screen), '_idle', screen)
-        else:
-            with open(os.path.join(st.repo.apps, app_id, 'index.html'), encoding='utf-8', errors='replace') as f:
-                html = inject(f.read(), app_id, screen)
+            app_id = '_idle'
+        title = (st.repo.manifest(app_id) or {}).get('name', f'Screen {screen}') if app_id != '_idle' else f'Screen {screen}'
+        html = SHELL.format(title=html_escape(str(title)), app=app_id, screen=html_escape(screen))
         self.send(200, body=html.encode(), ctype=MIME['.html'])
+
+    def frame(self, app_id, screen):
+        """The app document itself, SDK injected, served sandboxed (CSP) so it never runs with this server's origin."""
+        st = self.st
+        if app_id == '_idle':
+            html = inject(IDLE.format(screen=html_escape(screen)), '_idle', html_escape(screen))
+        else:
+            try:
+                with open(os.path.join(st.repo.apps, app_id, 'index.html'), encoding='utf-8', errors='replace') as f:
+                    html = inject(f.read(), app_id, html_escape(screen))
+            except OSError:
+                return self.send(404, {'error': 'not found'})
+        self.send(200, body=html.encode(), ctype=MIME['.html'], headers={'Content-Security-Policy': FRAME_CSP})
 
     # -- GET
     def do_GET(self):
@@ -504,8 +608,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == '/health':
                 return self.send(200, {'ok': True, 'apps': len(st.repo.ids()), 'commit': st.repo.head(),
                                        'assistant': st.assistant.name, 'house_rev': (st.house.doc or {}).get('rev')})
-            if u.path == '/':
-                return self.index()
+            if u.path in ('/', '/index.html'):
+                return self.file(os.path.join(st.repo.root, 'ui', 'index.html'))
             if u.path == '/api/authoring':  # docs/AUTHORING.md, live, for the assistant's context
                 return self.file(os.path.join(st.repo.root, 'docs', 'AUTHORING.md'))
             if u.path == '/favicon.ico':
@@ -521,11 +625,15 @@ class Handler(BaseHTTPRequestHandler):
                 if not u.path.endswith('/'):
                     return self.send(302, {}, headers={'Location': f'/app/{parts[1]}/' + (f'?{u.query}' if u.query else '')})
                 return self.page(parts[1], 'preview:' + parts[1])
+            if parts[:1] == ['frame'] and len(parts) == 2 and (manifest.check_id(parts[1]) or parts[1] == '_idle'):
+                return self.frame(parts[1], q.get('screen', '')[:80])
             if parts[:1] == ['screen'] and len(parts) == 2 and parts[1].isdigit():
                 return self.page(st.house.mapping().get(int(parts[1])), parts[1])
             if u.path == '/events':
                 return self.events(q.get('screen', ''))
             if u.path == '/proxy':
+                if not self.from_host():
+                    return
                 return self.proxy(q.get('app', ''), q.get('url', ''))
             if parts == ['api', 'apps']:
                 out = []
@@ -534,7 +642,7 @@ class Handler(BaseHTTPRequestHandler):
                     out.append({'id': i, 'name': m.get('name'), 'description': m.get('description'), 'size': m.get('size'),
                                 'permissions': m.get('permissions'), 'screens': st.screens_showing(i),
                                 'icon': icon_data_uri(st.repo, i, m), 'icon_png': f'/api/apps/{i}/icon.png',
-                                'commit': st.repo.head(i)[:12]})
+                                'commit': st.repo.head(i)[:12], 'last': (st.repo.history(i, 1) or [None])[0]})
                 return self.send(200, out)
             if parts[:2] == ['api', 'apps'] and len(parts) >= 3 and manifest.check_id(parts[2]):
                 a = parts[2]
@@ -547,10 +655,15 @@ class Handler(BaseHTTPRequestHandler):
                                            'commit': st.repo.head(a), 'screens': st.screens_showing(a)})
                 if parts[3:] == ['history']:
                     return self.send(200, st.repo.history(a))
+                if parts[3:] == ['thumb.png']:
+                    png = thumb_png(st, a, self.server.server_address[1])
+                    return self.send(200, body=png, ctype='image/png') if png else self.send(404, {'error': 'no thumbnail (no Chrome here)'})
                 if parts[3:] == ['icon.png']:
                     png = icon_png(st, a, int(q.get('size', 256)))
                     return self.send(200, body=png, ctype='image/png') if png else self.send(404, {'error': 'no icon'})
                 if parts[3:] == ['data']:
+                    if not self.from_host():
+                        return
                     return self.file(os.path.join(st.data, 'store', a + '.json')) if os.path.isfile(
                         os.path.join(st.data, 'store', a + '.json')) else self.send(200, {})
             if parts == ['api', 'screens']:
@@ -577,15 +690,6 @@ class Handler(BaseHTTPRequestHandler):
             r['url'], r['seq'] = (o['url'], o['seq']) if o else (None, 0)
             r['shown_seq'] = st.shown.get(r['screen'], 0)
         return sorted(out, key=lambda r: r['screen'] if isinstance(r['screen'], int) else 0)
-
-    def index(self):
-        st = self.st
-        rows = ''.join(f'<li><a href="/app/{i}/">{i}</a>: {(st.repo.manifest(i) or {}).get("description", "")}</li>'
-                       for i in st.repo.ids())
-        scr = ''.join(f'<li><a href="/screen/{r["screen"]}">screen {r["screen"]}</a>: {r["app"] or "(none)"}</li>'
-                      for r in self.screen_list())
-        html = f'<!doctype html><meta charset="utf-8"><title>PinPin apps</title><h1>Apps</h1><ul>{rows}</ul><h1>Screens</h1><ul>{scr}</ul>'
-        self.send(200, body=html.encode(), ctype=MIME['.html'])
 
     def events(self, screen):
         st = self.st
@@ -622,6 +726,10 @@ class Handler(BaseHTTPRequestHandler):
         allowed = (m.get('permissions') or {}).get('fetch', [])
         if host not in allowed and p.hostname not in allowed:
             return self.send(403, {'error': f'{host} is not in {app_id} permissions.fetch {allowed}'})
+        if p.username or p.password:
+            return self.send(400, {'error': 'no user:password@ in proxied urls'})
+        if not st.public_host(p.hostname):
+            return self.send(403, {'error': f'{p.hostname} is on the home network or this machine; apps only reach the internet'})
         sec = st.secrets.get(p.hostname, {})
         if sec.get('query'):
             qs = urllib.parse.parse_qsl(p.query) + list(sec['query'].items())
@@ -633,7 +741,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(hit[1], body=hit[2], ctype=hit[3], headers={'X-Proxy-Cache': 'hit'})
         req = urllib.request.Request(url, headers={'User-Agent': 'pinpin-apps/1', **sec.get('headers', {})})
         try:
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with NO_REDIRECT.open(req, timeout=10) as r:  # a redirect is returned, never followed (it could point anywhere)
                 body, code, ctype = r.read(MAX_PROXY + 1), r.status, r.headers.get('Content-Type', 'application/octet-stream')
         except urllib.error.HTTPError as e:
             body, code, ctype = e.read(MAX_PROXY + 1), e.code, e.headers.get('Content-Type', 'text/plain')
@@ -658,6 +766,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, {'error': 'not found'})
         a = parts[2]
         if parts[3:] == ['data']:
+            if not self.writable() or not self.from_host():
+                return
             n = int(self.headers.get('Content-Length') or 0)
             if n > MAX_STORE:
                 return self.send(413, {'error': f'app data over {MAX_STORE} bytes'})
@@ -700,6 +810,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         st = self.st
+        if self.headers.get('Origin') == 'null':
+            return self.send(403, {'error': 'apps can not call the API directly'})
         parts = [p for p in urllib.parse.urlparse(self.path).path.split('/') if p]
         if parts[:2] != ['api', 'apps'] or len(parts) != 3 or parts[2] not in st.repo.ids():
             return self.send(404, {'error': 'not found'})
@@ -720,6 +832,8 @@ class Handler(BaseHTTPRequestHandler):
         if d is None:
             return
         if parts == ['api', 'ask']:
+            if not self.from_host():
+                return
             if not (isinstance(d.get('prompt'), str) and d['prompt'].strip()):
                 return self.send(400, {'error': 'prompt required'})
             m = st.repo.manifest(str(d.get('app', ''))) if manifest.check_id(str(d.get('app', ''))) else None
@@ -786,6 +900,7 @@ def main_args(argv=None):
     ap.add_argument('--port', type=int, default=57830)
     ap.add_argument('--push', action='store_true', help='git push after every commit')
     ap.add_argument('--poll', type=float, default=3.0)
+    ap.add_argument('--io-timeout', type=float, default=30.0, help='seconds a client may stall a request')
     return ap.parse_args(argv)
 
 
@@ -796,7 +911,7 @@ def serve(a):
         st.house.fetch()
     except Exception as e:
         log('house not reachable at start, using the cached copy:', e)
-    handler = type('H', (Handler,), {'st': st})
+    handler = type('H', (Handler,), {'st': st, 'timeout': a.io_timeout})
     srv = ThreadingHTTPServer((a.bind, a.port), handler)
     srv.daemon_threads = True
     threading.Thread(target=st.watch_house, args=(a.poll,), daemon=True).start()
