@@ -25,6 +25,8 @@ commit in this repo.
 | `runner/apps_runner.py` | runs on the laptop: one chromeless Chrome window per app screen, on that screen's virtual display. |
 | `deploy/` | install scripts and LaunchAgents for the Mini and the laptop. |
 | `tools/sync.sh` | syncs the VPS checkout ↔ the Mini repo (where the assistant's commits land) ↔ GitHub. |
+| `tools/render_check.py` | headless Chrome over the DevTools protocol, on the Mini: JS errors, visible text, screenshot, and scripted voice (`--say`). |
+| `tools/air_test.sh` | end to end on the laptop, under the bench lock: a scratch display, an app, the runner's window, then teardown and air_smoke. |
 | `run_tests.sh` | the offline tests. Run it before every deploy. |
 
 ## An app
@@ -59,6 +61,8 @@ metres away. Classes: `pp-huge pp-big pp-small pp-muted pp-accent pp-card pp-chi
 Dark, high contrast, no hover states (there is no mouse), and no cursor.
 
 To try an app in a desktop browser, open `http://<mini>:57830/app/<id>/?dev=1`. A text box at the bottom feeds `onVoice`.
+`?say=eggs, tomatoes|recipe 2` scripts phrases instead. On the Mini, `python3 tools/render_check.py <url> --say ... --shot x.png`
+reports JS errors and the text on the page.
 
 ## API (Mini :57830)
 
@@ -102,8 +106,8 @@ never committed.
 - [x] M1: repo, app format and manifest validation; SDK (big-type layout, voice hook, storage, proxy, ask)
 - [x] M2: server with the create/update/rollback API (a commit per change), screen mapping, events, proxy, ask stub; 16 offline tests against the real house server
 - [x] M3: starter apps: weather (open-meteo, no key, "weather in <city>") and kitchen recipes (voice ingredients → Claude or the built-in list, one step at a time)
-- [ ] M4: the server on the Mini (LaunchAgent), with headless Chrome render checks of both apps
-- [ ] M5: the runner on the laptop: an app window on a virtual display, streamed by the atlas, under the bench lock with air_smoke
+- [x] M4: the server on the Mini (LaunchAgent io.mr-pinpin.apps), with headless Chrome render checks of both apps (`tools/render_check.py`, and `check: true` on PUT)
+- [ ] M5: the runner on the laptop: an app window on a virtual display, streamed by the atlas, under the bench lock with air_smoke (`tools/air_test.sh`). Finding: Chrome started over ssh can't reach the GUI session, so the runner must be the Aqua LaunchAgent
 - [ ] M6: /api/ask forwarded to work-42's assistant (port 57840), and recipes answered by Claude
 - [ ] M7: headset dictation to an app screen (`/say`), with work-c4
 - [ ] M8: the assistant creates a new app end to end ("make me a timer app") and it appears on a screen
