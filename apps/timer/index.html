@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Timer</title>
+<style> #t { font-size: 7rem; font-weight: 800; text-align: center; } </style></head>
+<body class="pp-center">
+<div id="t">0:00</div><div class="pp-hint">Say <b>5 minutes</b> · <b>stop</b></div>
+<script>
+let end = 0;
+pinpin.onVoice(t => {
+  const m = t.match(/(\d+)\s*(min|minute)/i);
+  if (m) { end = Date.now() + m[1] * 60000; pinpin.store.set('end', end); }
+  else if (/stop|cancel/i.test(t)) { end = 0; pinpin.store.set('end', 0); }
+});
+pinpin.ready.then(() => {
+  end = pinpin.store.get('end', 0);
+  setInterval(() => {
+    const s = Math.max(0, Math.round((end - Date.now()) / 1000));
+    document.getElementById('t').textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }, 250);
+});
+</script></body></html>
