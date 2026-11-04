@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Nightly end-to-end health suite (VPS root cron, 01:40 UTC, after work-42's assistant eval at 01:17). One /status
-check line per area ("nightly <area>"), plus a summary line. Read-only on everything live:
+check line per area ("nightly-<area>"), plus a summary line. Read-only on everything live:
   apps       the 6 apps rendered in headless Chrome on the Mini (no JS errors, expected text), plus the hostile-app
              sandbox probe (ALL BLOCKED)
   house      a round trip on the SCRATCH house (:57801): get, put, a stale put answered 409, tag, rollback to the tag
@@ -214,7 +214,7 @@ def main():
         except Exception as e:
             ok, text = False, f'the check itself crashed: {type(e).__name__}: {e}'[:200]
         results[name] = ok
-        post(f'nightly {name}', ok, text, a.dry)
+        post(f'nightly-{name}', ok, text, a.dry)
     if not a.only:
         failed = [n for n, ok in results.items() if not ok]
         post('nightly', not failed, f'{len(results) - len(failed)}/{len(results)} areas pass at {time.strftime("%H:%M", time.gmtime())} UTC'
