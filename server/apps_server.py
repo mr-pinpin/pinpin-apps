@@ -314,8 +314,13 @@ class Headset:
 
     def watch(self, period):
         while True:
-            self.last = self.poll()
-            time.sleep(period)
+            p = self.poll()
+            good = bool(p.get('vr')) and bool(p.get('toggles'))
+            if good or not self.last.get('vr'):
+                self.last = p
+            else:  # a partial answer (adb reconnecting, an install in progress): keep the last good reading
+                self.last = dict(self.last, retry_at=p['checked'], retry_state=p.get('state'))
+            time.sleep(period if good else 15)
 
 
 # ---- events to the pages
