@@ -19,6 +19,7 @@ Stdlib only.   python3 apps_runner.py [--mini http://192.168.0.50:57830] [--once
 """
 import argparse
 import base64
+import hmac
 import json
 import os
 import signal
@@ -312,6 +313,15 @@ class Input:
         raise ValueError(f'unknown input {kind}')
 
 
+def read_token():
+    """~/.local/share/pinpin-apps/token (the apps token, as on the Mini); absent: input stays open (old installs)."""
+    try:
+        with open(os.path.join(HOME, 'token')) as f:
+            return f.read().strip()
+    except OSError:
+        return ''
+
+
 def input_server(runner, port):
     inp = Input(runner)
 
@@ -324,6 +334,10 @@ def input_server(runner, port):
             self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
 
         def do_POST(self):
+            tok = read_token()
+            got = (self.headers.get('Authorization') or '').removeprefix('Bearer ').strip()
+            if tok and not hmac.compare_digest(got.encode(), tok.encode()):  # only the Mini (it holds the token) may drive us
+                return self.reply(401, {'error': 'token required'})
             parts = [p for p in self.path.split('?')[0].split('/') if p]  # /input/<screen>/<kind>
             if len(parts) != 3 or parts[0] != 'input' or not parts[1].isdigit():
                 return self.reply(404, {'error': 'not found'})

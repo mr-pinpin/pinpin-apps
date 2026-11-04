@@ -10,6 +10,8 @@
   GET  /app/<app>/                  preview of an app with the SDK, screen "preview"
   GET  /apps/<app>/<path>           raw app files;  GET /sdk/<file>  the SDK
   GET  /events?screen=<id>          server-sent events to the page: reload, voice {text}
+  Powerful calls need the shared token (Authorization: Bearer <token>, <data>/token): input/eval/say/app/open/reload
+  on screens, build, PUT/DELETE apps, rollback. GET /api/auth shows the rollout (grace hour, unauthenticated callers).
   GET  /api/apps                    the catalog: [{id, name, description, size, permissions, screens, icon (data: URI),
                                     icon_png (URL of a PNG, ?size=N, for the headset)}]
   GET  /api/apps/<app>              {manifest, files: {path: text}, commit}
@@ -44,6 +46,7 @@ Stdlib only. The repo (--repo) is a git checkout of mr-pinpin/pinpin-apps; app d
 """
 import argparse
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -387,6 +390,7 @@ class State:
         except (OSError, ValueError):
             self.opens = {}
         self.shown = {}
+        self.unauth = {}
         self.opens_lock = threading.Lock()
         self.runner_url = a.runner or ''  # set by the runner's own polls (X-PinPin-Runner) unless given
         try:
@@ -487,6 +491,31 @@ class State:
             keep = [m for m in msgs if m['id'] not in set(ids)]
             self.inbox_write(app_id, keep)
             return len(msgs) - len(keep)
+
+    def token(self):
+        try:
+            with open(os.path.join(self.data, 'token')) as f:
+                return f.read().strip()
+        except OSError:
+            return ''
+
+    def enforce_after(self):
+        try:
+            with open(os.path.join(self.data, 'auth.json')) as f:
+                return float(json.load(f).get('enforce_after', 0))
+        except (OSError, ValueError):
+            return 0.0
+
+    def note_unauth(self, method, path, ip, what):
+        key = (method, re.sub(r'/\d+/', '/N/', path), ip)
+        n = self.unauth.get(key, 0) + 1
+        self.unauth[key] = n
+        if n == 1 or n % 100 == 0:  # first sighting, then every 100th: small log
+            try:
+                with open(os.path.join(self.data, 'unauth.log'), 'a') as f:
+                    f.write(f'{now()} {what}: {method} {key[1]} from {ip} (x{n})\n')
+            except OSError:
+                pass
 
     def build_url(self):
         """The assistant's app-building endpoint: <data>/build-url if set, else /api/build next to its /api/ask."""
@@ -676,6 +705,24 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != 'HEAD':
             self.wfile.write(body)
 
+    def authed(self):
+        """Powerful calls (input, eval, assign, open, build, app writes) need the shared token: <data>/token, sent as
+        "Authorization: Bearer <token>" or "X-PinPin-Token". Until <data>/auth.json's enforce_after (the rollout grace
+        hour) a call without it is still served and logged in <data>/unauth.log, so missing callers show up first."""
+        st = self.st
+        tok = st.token()
+        if not tok:
+            return True
+        got = (self.headers.get('Authorization') or '').removeprefix('Bearer ').strip() or (self.headers.get('X-PinPin-Token') or '').strip()
+        if got and hmac.compare_digest(got.encode(), tok.encode()):
+            return True
+        grace = time.time() < st.enforce_after()
+        st.note_unauth(self.command, urllib.parse.urlparse(self.path).path, self.client_address[0], 'served (grace)' if grace else 'refused')
+        if grace:
+            return True
+        self.send(401, {'error': 'token required (Authorization: Bearer <token>)'}, headers={'WWW-Authenticate': 'Bearer'})
+        return False
+
     def from_host(self):
         """App frames (opaque origin) may not call the API themselves: they must ask their host page. A request from a
         sandboxed frame carries Origin: null; one without our X-PinPin header can't come from host.js."""
@@ -762,6 +809,11 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send(200, body=r.read(), ctype='image/svg+xml')
                 except Exception as e:
                     return self.send(502, {'error': f'house plan: {e}'})
+            if u.path == '/api/auth':  # rollout state, for the agents wiring the token
+                ea = st.enforce_after()
+                return self.send(200, {'token_set': bool(st.token()), 'enforce_after': ea,
+                                       'enforced': bool(st.token()) and time.time() >= ea,
+                                       'unauthenticated': [{'method': k[0], 'path': k[1], 'from': k[2], 'count': v} for k, v in st.unauth.items()]})
             if u.path == '/api/authoring':  # docs/AUTHORING.md, live, for the assistant's context
                 return self.file(os.path.join(st.repo.root, 'docs', 'AUTHORING.md'))
             if u.path == '/favicon.ico':
@@ -945,6 +997,8 @@ class Handler(BaseHTTPRequestHandler):
         if parts[:2] != ['api', 'apps'] or len(parts) < 3 or not manifest.check_id(parts[2]):
             return self.send(404, {'error': 'not found'})
         a = parts[2]
+        if parts[3:] != ['data'] and not self.authed():  # writing an app (the host's own data PUT is host-scoped)
+            return
         if parts[3:] == ['data']:
             if not self.writable() or not self.from_host():
                 return
@@ -992,6 +1046,8 @@ class Handler(BaseHTTPRequestHandler):
         st = self.st
         if self.headers.get('Origin') == 'null':
             return self.send(403, {'error': 'apps can not call the API directly'})
+        if not self.authed():
+            return
         parts = [p for p in urllib.parse.urlparse(self.path).path.split('/') if p]
         if parts[:2] != ['api', 'apps'] or len(parts) != 3 or parts[2] not in st.repo.ids():
             return self.send(404, {'error': 'not found'})
@@ -1038,6 +1094,10 @@ class Handler(BaseHTTPRequestHandler):
             err = st.post_message(sender, parts[2], kind, d.get('data'), dry)
             return self.send(403 if 'may not' in err or 'accept' in err else 404 if err.startswith('no app') else 400 if err else 200,
                              {'error': err} if err else {'queued': not dry, 'dry': dry})
+        protected = parts == ['api', 'build'] or (parts[:2] == ['api', 'apps'] and parts[3:] == ['rollback']) or \
+            (parts[:2] == ['api', 'screens'] and len(parts) == 4 and parts[3] != 'shown')
+        if protected and not self.authed():
+            return
         if parts == ['api', 'build']:  # the control page's "ask Claude to build an app": the assistant runs its app tools
             prompt = d.get('prompt')
             if not (isinstance(prompt, str) and prompt.strip()):
@@ -1100,7 +1160,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not st.runner_url:
                     return self.send(502, {'error': 'the laptop runner has not checked in'})
                 req = urllib.request.Request(f'{st.runner_url}/input/{sid}/{what}', data=json.dumps(d).encode(), method='POST',
-                                             headers={'Content-Type': 'application/json'})
+                                             headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + st.token()})
                 try:
                     with urllib.request.urlopen(req, timeout=5) as r:
                         return self.send(r.status, body=r.read())

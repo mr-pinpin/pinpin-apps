@@ -582,6 +582,44 @@ class Apps(unittest.TestCase):
         bad = dict(snd, permissions={'send': ['../x']})
         self.assertEqual(self.req('PUT', '/api/apps/msender', {'files': {'manifest.json': json.dumps(bad)}})[0], 400)
 
+    def test_token(self):
+        tok = 'test-token-0123456789'
+        tp, ap = os.path.join(self.st.data, 'token'), os.path.join(self.st.data, 'auth.json')
+        with open(tp, 'w') as f:
+            f.write(tok + '\n')
+        try:
+            body = {'app': None}
+            # grace hour: served without the token, but logged
+            with open(ap, 'w') as f:
+                json.dump({'enforce_after': time.time() + 3600}, f)
+            self.assertEqual(self.req('POST', '/api/screens/71/app', body)[0], 200)
+            a = self.req('GET', '/api/auth')[1]
+            self.assertTrue(a['token_set']); self.assertFalse(a['enforced'])
+            self.assertIn({'method': 'POST', 'path': '/api/screens/N/app', 'from': '127.0.0.1', 'count': 1}, a['unauthenticated'])
+            # enforced
+            with open(ap, 'w') as f:
+                json.dump({'enforce_after': time.time() - 1}, f)
+            for method, path, b in (('POST', '/api/screens/71/app', body), ('POST', '/api/screens/71/click', {'u': 1, 'v': 1}),
+                                    ('POST', '/api/screens/71/eval', {'js': '1'}), ('POST', '/api/screens/71/say', {'text': 'x'}),
+                                    ('POST', '/api/screens/71/open', {'url': None}), ('POST', '/api/build', {'prompt': 'x'}),
+                                    ('PUT', '/api/apps/tok', {'files': self.app('tok')}), ('DELETE', '/api/apps/weather', None),
+                                    ('POST', '/api/apps/weather/rollback', {'commit': 'abcdef1'})):
+                self.assertEqual(self.req(method, path, b)[0], 401, path)
+            ok = {'X-PinPin': '1', 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok}
+            self.assertEqual(self.req('POST', '/api/screens/71/app', body, headers=ok)[0], 200)
+            self.assertEqual(self.req('PUT', '/api/apps/tok', {'files': self.app('tok')}, headers=ok)[0], 200)
+            self.assertEqual(self.req('POST', '/api/screens/71/say', {'text': 'x'}, headers={**ok, 'Authorization': '', 'X-PinPin-Token': tok})[0], 404)  # authed; nobody listening
+            self.assertEqual(self.req('POST', '/api/screens/71/app', body, headers={**ok, 'Authorization': 'Bearer wrong'})[0], 401)
+            # still open: read-only pages and the host pages' app-scoped calls
+            for path in ('/status', '/help', '/', '/api/apps', '/api/screens', '/api/status', '/api/auth'):
+                self.assertEqual(self.req('GET', path, headers={})[0], 200, path)
+            self.assertEqual(self.req('PUT', '/api/apps/recipes/data', {})[0], 200)  # host.js, X-PinPin only
+            self.assertEqual(self.req('POST', '/api/screens/71/shown', {'seq': 1})[0], 200)  # the runner
+            log = open(os.path.join(self.st.data, 'unauth.log')).read()
+            self.assertIn('served (grace): POST /api/screens/N/app', log); self.assertIn('refused: POST /api/build', log)
+        finally:
+            os.remove(tp); os.remove(ap)
+
     def test_authoring_guide(self):
         st, text, r = self.req('GET', '/api/authoring')
         self.assertEqual(st, 200); self.assertIn('PUT http://', text)

@@ -72,8 +72,20 @@ function ago(iso) {
   return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' d ago';
 }
 
+// writes need the household token: asked once, kept in this browser
+function token() { try { return localStorage.getItem('pinpin-token') || ''; } catch (e) { return ''; } }
+async function write(url, body) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token() }, body: JSON.stringify(body) });
+    if (r.status !== 401 || attempt) return r;
+    const t = prompt('This needs the PinPin apps token (ask the agents, or see /root/.config/pinpin-apps/token on the VPS). It is kept in this browser.');
+    if (!t) return r;
+    try { localStorage.setItem('pinpin-token', t.trim()); } catch (e) {}
+  }
+}
+
 async function assign(screen, app) {
-  const r = await fetch('/api/screens/' + screen + '/app', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ app: app || null }) });
+  const r = await write('/api/screens/' + screen + '/app', { app: app || null });
   const d = await r.json().catch(() => ({}));
   if (r.ok) toast(app ? `${(apps.find((a) => a.id === app) || {}).name || app} on screen ${screen}` : `Screen ${screen} cleared`);
   else toast('Could not save: ' + (d.error || r.status));
@@ -129,7 +141,7 @@ $('ask').onsubmit = async (e) => {
   const tick = setInterval(() => { out.textContent = `Claude is working… ${Math.round((Date.now() - t0) / 1000)} s (building, checking and fixing the app takes up to a few minutes)`; }, 500);
   try {
     const body = { prompt: $('prompt').value, app: $('askApp').value || null, screen: $('askScreen').value ? +$('askScreen').value : null };
-    const r = await fetch('/api/build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const r = await write('/api/build', body);
     const d = await r.json().catch(() => ({}));
     clearInterval(tick);
     if (!r.ok) { out.className = 'answer err'; out.textContent = 'Claude could not do it: ' + (d.error || ('HTTP ' + r.status)); }
