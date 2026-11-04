@@ -26,8 +26,10 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 HOME = os.path.expanduser('~/.local/share/pinpin-apps')
@@ -42,8 +44,8 @@ def log(*a):
     print(time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), *a, file=sys.stderr, flush=True)
 
 
-def get_json(url, timeout=4):
-    with urllib.request.urlopen(url, timeout=timeout) as r:
+def get_json(url, timeout=4, headers=None):
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers or {}), timeout=timeout) as r:
         return json.loads(r.read())
 
 
@@ -159,14 +161,186 @@ def chrome_args(mini, screen, target, box, mode='app'):
     return a
 
 
+# ---- input over CDP: synthetic CGEvent clicks never reach Chrome --app windows (2026-11-04, work-42), so the headset's
+# pinch-clicks and the assistant's clicks come here (the Mini forwards /api/screens/<id>/{click,move,scroll,type,key})
+
+MODS = {'alt': 1, 'option': 1, 'ctrl': 2, 'control': 2, 'cmd': 4, 'meta': 4, 'command': 4, 'shift': 8}
+KEYS = {  # key -> (code, windowsVirtualKeyCode, text typed on keyDown)
+    'enter': ('Enter', 13, '\r'), 'return': ('Enter', 13, '\r'), 'tab': ('Tab', 9, '\t'), 'escape': ('Escape', 27, ''),
+    'esc': ('Escape', 27, ''), 'backspace': ('Backspace', 8, ''), 'delete': ('Delete', 46, ''), 'space': ('Space', 32, ' '),
+    'arrowup': ('ArrowUp', 38, ''), 'arrowdown': ('ArrowDown', 40, ''), 'arrowleft': ('ArrowLeft', 37, ''),
+    'arrowright': ('ArrowRight', 39, ''), 'up': ('ArrowUp', 38, ''), 'down': ('ArrowDown', 40, ''), 'left': ('ArrowLeft', 37, ''),
+    'right': ('ArrowRight', 39, ''), 'pageup': ('PageUp', 33, ''), 'pagedown': ('PageDown', 34, ''), 'home': ('Home', 36, ''),
+    'end': ('End', 35, ''),
+}
+KEY_NAMES = {'enter': 'Enter', 'return': 'Enter', 'esc': 'Escape', 'up': 'ArrowUp', 'down': 'ArrowDown', 'left': 'ArrowLeft',
+             'right': 'ArrowRight', 'space': ' '}
+
+
+def key_events(combo):
+    """'Cmd+L' -> the keyDown/keyUp params for Input.dispatchKeyEvent."""
+    parts = [p.strip() for p in str(combo).split('+') if p.strip()]
+    if not parts:
+        raise ValueError('empty key')
+    mods = 0
+    for p in parts[:-1]:
+        if p.lower() not in MODS:
+            raise ValueError(f'unknown modifier {p}')
+        mods |= MODS[p.lower()]
+    k = parts[-1]
+    if k.lower() in KEYS:
+        code, vk, text = KEYS[k.lower()]
+        key = KEY_NAMES.get(k.lower(), code)
+    elif len(k) == 1:
+        key, code, vk, text = k, ('Key' + k.upper()) if k.isalpha() else ('Digit' + k if k.isdigit() else ''), ord(k.upper()), k
+    elif k.lower().startswith('f') and k[1:].isdigit():
+        key, code, vk, text = k.upper(), k.upper(), 111 + int(k[1:]), ''
+    else:
+        raise ValueError(f'unknown key {k}')
+    if mods & (2 | 4):  # with Ctrl/Cmd it is a shortcut, not typing
+        text = ''
+    down = {'type': 'keyDown' if text else 'rawKeyDown', 'key': key, 'code': code, 'windowsVirtualKeyCode': vk, 'modifiers': mods}
+    if text:
+        down['text'] = down['unmodifiedText'] = text
+    if mods & 4 and len(k) == 1:  # macOS: Chrome maps Cmd shortcuts through editing commands
+        cmd = {'a': 'selectAll', 'c': 'copy', 'v': 'paste', 'x': 'cut', 'z': 'undo'}.get(k.lower())
+        if cmd:
+            down['commands'] = [cmd]
+    return [down, {'type': 'keyUp', 'key': key, 'code': code, 'windowsVirtualKeyCode': vk, 'modifiers': mods}]
+
+
+class Input:
+    """One persistent CDP connection per screen window (scroll comes at up to 20/s), page geometry cached briefly."""
+    def __init__(self, runner):
+        self.r, self.conns, self.locks, self.geo = runner, {}, {}, {}
+
+    def _conn(self, s):
+        c = self.conns.get(s)
+        if c is None:
+            c = self.conns[s] = CDP(cdp_port(s))
+        return c
+
+    def call(self, s, method, params=None):
+        with self.locks.setdefault(s, threading.Lock()):
+            for attempt in (0, 1):  # a stale socket (page navigated, Chrome restarted): reconnect once
+                try:
+                    return self._conn(s).call(method, params)
+                except Exception:
+                    c = self.conns.pop(s, None)
+                    if c:
+                        try: c.close()
+                        except Exception: pass
+                    self.geo.pop(s, None)
+                    if attempt:
+                        raise
+
+    def point(self, s, u, v, space):
+        """u, v in 0..10000 -> CSS px in the page. space 'display' (default): of the screen's whole virtual display, like
+        pinpin-displays; 'viewport': of the page's visible area."""
+        g = self.geo.get(s)
+        if not g or time.time() - g[0] > 2:
+            js = '[screenX, screenY, outerWidth, outerHeight, innerWidth, innerHeight]'
+            r = self.call(s, 'Runtime.evaluate', {'expression': js, 'returnByValue': True})
+            g = self.geo[s] = (time.time(), r['result']['value'])
+        sx, sy, ow, oh, iw, ih = g[1]
+        u, v = max(0.0, min(10000.0, float(u))) / 10000, max(0.0, min(10000.0, float(v))) / 10000
+        if space == 'viewport':
+            return u * iw, v * ih
+        disp = self.r.display_box.get(s)
+        if not disp:
+            raise LookupError('no window')
+        dx, dy, dw, dh = disp
+        gx, gy = dx + u * dw, dy + v * dh                # global point on the display
+        cx, cy = sx + (ow - iw), sy + (oh - ih)          # the page's top-left on screen (the window chrome is on top)
+        return min(max(gx - cx, 0), iw - 1), min(max(gy - cy, 0), ih - 1)
+
+    def what(self, s, x, y):
+        try:
+            js = (f'(function(){{var e=document.elementFromPoint({x:.0f},{y:.0f});if(!e)return "";'
+                  f'var a=e.closest("a,button,input,textarea,select,[role=button]")||e;'
+                  f'return a.tagName+": "+(a.innerText||a.value||a.getAttribute("aria-label")||"").trim().slice(0,60)}})()')
+            return self.call(s, 'Runtime.evaluate', {'expression': js, 'returnByValue': True})['result'].get('value', '')
+        except Exception:
+            return ''
+
+    def do(self, s, kind, d):
+        if s not in self.r.procs or self.r.procs[s][0].poll() is not None:
+            raise LookupError('no window')
+        space = d.get('space', 'display')
+        if kind in ('click', 'move', 'scroll'):
+            x, y = self.point(s, d.get('u', 5000), d.get('v', 5000), space)
+        if kind == 'move':
+            self.call(s, 'Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': x, 'y': y})
+            return {'ok': True, 'x': round(x), 'y': round(y)}
+        if kind == 'click':
+            btn = d.get('button', 'left')
+            if btn not in ('left', 'right', 'middle'):
+                raise ValueError('button: left, right or middle')
+            n = 2 if d.get('double') or int(d.get('count', 1)) >= 2 else 1
+            el = self.what(s, x, y)
+            self.call(s, 'Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': x, 'y': y})
+            for c in range(1, n + 1):
+                for t in ('mousePressed', 'mouseReleased'):
+                    self.call(s, 'Input.dispatchMouseEvent', {'type': t, 'x': x, 'y': y, 'button': btn, 'clickCount': c})
+            return {'ok': True, 'x': round(x), 'y': round(y), 'element': el}
+        if kind == 'scroll':
+            self.call(s, 'Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': x, 'y': y,
+                                                      'deltaX': float(d.get('dx', 0)), 'deltaY': float(d.get('dy', 0))})
+            return {'ok': True, 'x': round(x), 'y': round(y)}
+        if kind == 'type':
+            t = d.get('text')
+            if not isinstance(t, str) or not t:
+                raise ValueError('text required')
+            self.call(s, 'Input.insertText', {'text': t[:5000]})
+            return {'ok': True}
+        if kind == 'key':
+            for ev in key_events(d.get('combo') or d.get('key') or ''):
+                self.call(s, 'Input.dispatchKeyEvent', ev)
+            return {'ok': True}
+        raise ValueError(f'unknown input {kind}')
+
+
+def input_server(runner, port):
+    inp = Input(runner)
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+
+        def reply(self, code, obj):
+            b = json.dumps(obj).encode()
+            self.send_response(code); self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
+
+        def do_POST(self):
+            parts = [p for p in self.path.split('?')[0].split('/') if p]  # /input/<screen>/<kind>
+            if len(parts) != 3 or parts[0] != 'input' or not parts[1].isdigit():
+                return self.reply(404, {'error': 'not found'})
+            try:
+                d = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
+                return self.reply(200, inp.do(int(parts[1]), parts[2], d))
+            except LookupError as e:
+                return self.reply(404, {'error': str(e)})
+            except (ValueError, TypeError) as e:
+                return self.reply(400, {'error': str(e)})
+            except Exception as e:
+                return self.reply(502, {'error': f'cdp: {e}'})
+
+    srv = ThreadingHTTPServer(('0.0.0.0', port), H)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
 class Runner:
     def __init__(self, a):
         self.a, self.procs = a, {}  # screen -> (Popen, target, seq, box)
+        self.display_box = {}       # screen -> (x, y, w, h) of its whole virtual display, for input u/v
         self.backoff = {}           # screen -> (next try time, delay)
 
     def step(self):
         try:
-            screens = get_json(self.a.mini + '/api/screens')
+            # the header tells the Mini where to forward input (it learns our address from the connection)
+            screens = get_json(self.a.mini + '/api/screens', headers={'X-PinPin-Runner': str(self.a.input_port)} if self.a.input_port else None)
             displays = get_json(self.a.displays + '/displays')
         except Exception as e:
             log('not syncing:', e)  # keep what runs; a Mini blip must not blank the screens
@@ -174,6 +348,7 @@ class Runner:
         dids = {d['display'] for d in displays}
         bounds, main_id = display_bounds(dids) if dids else ({}, 0)
         want = plan(screens, displays, bounds, main_id)
+        self.display_box = {s: (b[0], b[1] - MENU_BAR, b[2], b[3] + MENU_BAR) for s, (_, _, b) in want.items()}
         for s in list(self.procs):
             p, target, seq, box = self.procs[s]
             if s not in want or want[s][2] != box or p.poll() is not None:
@@ -243,11 +418,14 @@ def main():
     ap.add_argument('--period', type=float, default=3.0)
     ap.add_argument('--once', action='store_true')
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--input-port', type=int, default=57735, help='LAN port for CDP input (the Mini forwards to it); 0: off')
     a = ap.parse_args()
     r = Runner(a)
     signal.signal(signal.SIGTERM, r.stop_all)
     signal.signal(signal.SIGINT, r.stop_all)
-    log(f'apps runner: {a.mini}, displays {a.displays}, mode {a.mode}')
+    if a.input_port:
+        input_server(r, a.input_port)
+    log(f'apps runner: {a.mini}, displays {a.displays}, mode {a.mode}, input :{a.input_port}')
     while True:
         r.step()
         if a.once:

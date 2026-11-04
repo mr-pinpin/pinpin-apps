@@ -492,6 +492,32 @@ class Apps(unittest.TestCase):
         cat = self.req('GET', '/api/apps')[1]
         self.assertTrue(all('last' in a and 'commit' in a for a in cat))
 
+    def test_input_forwarded_to_the_runner(self):
+        class R(BaseHTTPRequestHandler):
+            seen = []
+            def log_message(self, *a): pass
+            def do_POST(self):
+                R.seen.append((self.path, json.loads(self.rfile.read(int(self.headers['Content-Length'])))))
+                code, out = (404, {'error': 'no window'}) if '/9/' in self.path else (200, {'ok': True, 'x': 1, 'y': 2})
+                b = json.dumps(out).encode()
+                self.send_response(code); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
+        srv = bg(ThreadingHTTPServer(('127.0.0.1', 0), R))
+        try:
+            self.st.runner_url = ''
+            self.assertEqual(self.req('POST', '/api/screens/47/click', {'u': 1, 'v': 2})[0], 502)  # not checked in yet
+            # the runner checks in by polling /api/screens with its input port
+            self.req('GET', '/api/screens', headers={'X-PinPin-Runner': str(srv.server_address[1])})
+            self.assertEqual(self.st.runner_url, f'http://127.0.0.1:{srv.server_address[1]}')
+            st, d, _ = self.req('POST', '/api/screens/47/click', {'u': 5000, 'v': 8450, 'count': 2})
+            self.assertEqual((st, d), (200, {'ok': True, 'x': 1, 'y': 2}))
+            self.assertEqual(R.seen[-1], ('/input/47/click', {'u': 5000, 'v': 8450, 'count': 2}))
+            for kind in ('move', 'scroll', 'type', 'key'):
+                self.assertEqual(self.req('POST', f'/api/screens/47/{kind}', {'u': 1})[0], 200, kind)
+            self.assertEqual(self.req('POST', '/api/screens/9/click', {'u': 1, 'v': 1})[0], 404)  # no window there
+            self.assertEqual(self.req('POST', '/api/screens/47/click', {'u': 1}, headers={'Origin': 'null', 'Content-Type': 'application/json'})[0], 403)
+        finally:
+            srv.shutdown(); srv.server_close(); self.st.runner_url = ''
+
     def test_authoring_guide(self):
         st, text, r = self.req('GET', '/api/authoring')
         self.assertEqual(st, 200); self.assertIn('PUT http://', text)

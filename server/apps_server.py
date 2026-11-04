@@ -27,6 +27,9 @@
   POST /api/screens/<id>/open       {url|null} the runner navigates that screen's window there (null: back to its app);
                                     GET /api/screens shows url, seq and shown_seq (= seq once it is on screen)
   POST /api/screens/<id>/shown      {seq} (the runner)
+  POST /api/screens/<id>/click|move|scroll|type|key   input into that screen's runner window over CDP (forwarded to
+                                    the laptop runner): {u, v (0..10000 of the display, or space:"viewport"), button,
+                                    count|double} | {u, v} | {u, v, dx, dy} | {text} | {key|combo: "Cmd+L"}
   POST /api/ask                     {app, screen, prompt, system?, json?, model?} -> {text, json?} (assistant, or the stub)
   GET  /proxy?app=<app>&url=<url>   GET through the Mini, only to hosts in the app's permissions.fetch
 
@@ -312,6 +315,7 @@ class State:
             self.opens = {}
         self.shown = {}
         self.opens_lock = threading.Lock()
+        self.runner_url = a.runner or ''  # set by the runner's own polls (X-PinPin-Runner) unless given
         try:
             with open(os.path.join(a.data, 'proxy-private.json')) as f:
                 self.private_ok = set(json.load(f))
@@ -667,6 +671,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.file(os.path.join(st.data, 'store', a + '.json')) if os.path.isfile(
                         os.path.join(st.data, 'store', a + '.json')) else self.send(200, {})
             if parts == ['api', 'screens']:
+                rp = self.headers.get('X-PinPin-Runner', '')
+                if rp.isdigit():  # the laptop runner polls with its input port: that's where input goes
+                    st.runner_url = f'http://{self.client_address[0]}:{int(rp)}'
                 return self.send(200, self.screen_list())
             return self.send(404, {'error': 'not found'})
         except (BrokenPipeError, ConnectionResetError):
@@ -881,6 +888,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(400, {'error': 'url: an http(s) URL, or null to return to the app'})
                 seq = st.set_open(sid, url)
                 return self.send(200, {'screen': sid, 'url': url, 'seq': seq or 0})
+            if what in ('click', 'move', 'scroll', 'type', 'key'):
+                if not st.runner_url:
+                    return self.send(502, {'error': 'the laptop runner has not checked in'})
+                req = urllib.request.Request(f'{st.runner_url}/input/{sid}/{what}', data=json.dumps(d).encode(), method='POST',
+                                             headers={'Content-Type': 'application/json'})
+                try:
+                    with urllib.request.urlopen(req, timeout=5) as r:
+                        return self.send(r.status, body=r.read())
+                except urllib.error.HTTPError as e:
+                    return self.send(e.code, body=e.read())
+                except Exception as e:
+                    return self.send(502, {'error': f'laptop runner: {e}'})
             if what == 'shown':
                 if not isinstance(d.get('seq'), int):
                     return self.send(400, {'error': 'seq: int'})
@@ -900,6 +919,7 @@ def main_args(argv=None):
     ap.add_argument('--port', type=int, default=57830)
     ap.add_argument('--push', action='store_true', help='git push after every commit')
     ap.add_argument('--poll', type=float, default=3.0)
+    ap.add_argument('--runner', default='', help='the laptop runner input URL; default: learned from its polls')
     ap.add_argument('--io-timeout', type=float, default=30.0, help='seconds a client may stall a request')
     return ap.parse_args(argv)
 

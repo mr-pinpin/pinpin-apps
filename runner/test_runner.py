@@ -42,5 +42,30 @@ class Plan(unittest.TestCase):
         self.assertIn('--app=https://example.com/', r.chrome_args('http://m', 2, 'https://example.com/', (0, 0, 1, 1)))
 
 
+class Keys(unittest.TestCase):
+    def test_key_events(self):
+        d, u = r.key_events('Enter')
+        self.assertEqual((d['type'], d['key'], d['windowsVirtualKeyCode'], d['text']), ('keyDown', 'Enter', 13, '\r'))
+        d, u = r.key_events('Cmd+L')
+        self.assertEqual((d['type'], d['key'], d['modifiers'], d.get('text')), ('rawKeyDown', 'L', 4, None))
+        d, u = r.key_events('Cmd+A'); self.assertEqual(d['commands'], ['selectAll'])
+        self.assertEqual(r.key_events('Shift+Tab')[0]['modifiers'], 8)
+        self.assertEqual(r.key_events('down')[0]['key'], 'ArrowDown')
+        for bad in ('', 'Hyper+X', 'Florp'):
+            self.assertRaises(ValueError, r.key_events, bad)
+
+
+class Point(unittest.TestCase):
+    def test_display_uv_to_page_px(self):
+        class Fake:  # a 1920x1200 display at x=1440; the window under the menu bar with a 28 px title bar
+            procs = {47: None}; display_box = {47: (1440, 0, 1920, 1200)}
+        inp = r.Input(Fake())
+        inp.call = lambda s, m, p=None: {'result': {'value': [1440, 25, 1920, 1175, 1920, 1147]}}
+        x, y = inp.point(47, 5000, 5000, 'display')
+        self.assertEqual((round(x), round(y)), (960, 600 - 53))  # 25 menu bar + 28 title bar above the page
+        self.assertEqual(inp.point(47, 0, 0, 'display'), (0, 0))  # clicks on the menu bar clamp to the page's edge
+        self.assertEqual(inp.point(47, 10000, 10000, 'viewport'), (1920, 1147))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=1)
