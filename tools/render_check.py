@@ -114,7 +114,7 @@ def main():
     port = 9400 + os.getpid() % 500
     target = urllib.parse.urlparse(a.url)
     net = [] if a.no_sandbox_net else ['--proxy-server=http://127.0.0.1:9',  # nothing listens there: requests fail
-                                       f'--proxy-bypass-list={target.hostname}:{target.port or 80};<-loopback>']
+                                       f'--proxy-bypass-list=<-loopback>;{target.hostname}:{target.port or 80}']  # order matters
     p = subprocess.Popen([CHROME, '--headless=new', f'--remote-debugging-port={port}', f'--user-data-dir={prof}',
                           f'--window-size={w},{h}', '--hide-scrollbars', '--no-first-run', '--use-mock-keychain', *net, 'about:blank'],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
