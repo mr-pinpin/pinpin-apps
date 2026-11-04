@@ -26,4 +26,9 @@ find . -type f | while read f; do
   cp "$f" "$dst.restore-tmp" && mv "$dst.restore-tmp" "$dst"
 done
 echo "restored $(find . -type f | wc -l | tr -d ' ') files into ~/pinpin-apps-data"; rm -rf "$t"
+# open pages hold the old copy in memory: reload every screen with an app so none of them saves it back
+T=$(cat ~/pinpin-apps-data/token 2>/dev/null)
+for sc in $(curl -s 127.0.0.1:57830/api/screens | python3 -c "import json,sys; print(' '.join(str(r['screen']) for r in json.load(sys.stdin) if r.get('app')))"); do
+  curl -s -m5 -X POST -H Content-Type:application/json -H "Authorization: Bearer $T" -d '{}' 127.0.0.1:57830/api/screens/$sc/reload >/dev/null
+done
 REMOTE
