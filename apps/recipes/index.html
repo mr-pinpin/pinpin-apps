@@ -15,7 +15,7 @@
   .rc .miss { font-size: 0.6rem; color: var(--pp-bad); }
   #recipe { display: none; flex-direction: column; gap: 0.4rem; }
   #recipe.on { display: flex; }
-  #step { font-size: 1.45rem; line-height: 1.2; font-weight: 700; }
+  #step { font-size: 1.7rem; line-height: 1.2; font-weight: 700; overflow: hidden; }
   #stepn { color: var(--pp-accent); }
   #dots { display: flex; gap: 0.2rem; } #dots i { width: 0.35rem; height: 0.35rem; border-radius: 50%; background: var(--pp-line); }
   #dots i.on { background: var(--pp-accent); }
@@ -30,7 +30,7 @@
 <main id="main" class="pp-grow">
   <section id="list"></section>
   <section id="recipe">
-    <div class="pp-row"><h2 id="rtitle" class="pp-grow pp-clip"></h2><div id="rmin" class="pp-muted pp-small"></div></div>
+    <div class="pp-row"><div id="rtitle" class="pp-grow pp-clip pp-muted"></div><div id="rmin" class="pp-muted pp-small"></div></div>
     <div id="dots"></div>
     <div id="step" class="pp-grow"></div>
     <div id="ruses" class="pp-small pp-muted"></div>

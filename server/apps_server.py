@@ -7,7 +7,8 @@
   GET  /events?screen=<id>          server-sent events to the page: reload, voice {text}
   GET  /api/apps                    [{id, name, description, size, permissions, commit}]
   GET  /api/apps/<app>              {manifest, files: {path: text}, commit}
-  PUT  /api/apps/<app>              {files: {path: text|null}, message, replace?, by?} -> one git commit, screens reload
+  PUT  /api/apps/<app>              {files: {path: text|null}, message, replace?, by?, check?, say?} -> one git commit,
+                                    screens reload; check: render it in headless Chrome, report JS errors + text
   DELETE /api/apps/<app>            removes the folder (one commit) and unassigns its screens
   GET  /api/apps/<app>/history      [{commit, when, subject}]
   POST /api/apps/<app>/rollback     {commit} -> folder as at that commit, as a new commit
@@ -37,6 +38,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(1, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
 import manifest  # noqa: E402
 
 SHA = re.compile(r'^[0-9a-f]{7,40}$')
@@ -333,6 +335,22 @@ IDLE = """<!doctype html><html><head><meta charset="utf-8"><title>Screen {screen
 <p class="pp-muted">No app here yet. Ask Claude for one, e.g. &ldquo;a recipe app for the kitchen&rdquo;.</p></main></body></html>"""
 
 
+def render_check(port, app_id, say):
+    """tools/render_check.py on this machine (needs Chrome): JS errors and the visible text of the app's preview."""
+    tool = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools', 'render_check.py')
+    import render_check as rc  # noqa: E402  (tools/ is on the path, see below)
+    if not os.path.exists(rc.CHROME):
+        return {'skipped': 'no Chrome on this machine'}
+    args = [sys.executable, tool, f'http://127.0.0.1:{port}/app/{app_id}/', '--wait', '2.5']
+    for t in say:
+        args += ['--say', t]
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=60)
+        return json.loads(r.stdout)
+    except Exception as e:
+        return {'error': f'render check failed: {e}'}
+
+
 def inject(html, app_id, screen):
     tag = (f'<base href="/apps/{app_id}/"><meta name="viewport" content="width=device-width,initial-scale=1">'
            f'<link rel="stylesheet" href="/sdk/pinpin.css">'
@@ -403,6 +421,8 @@ class Handler(BaseHTTPRequestHandler):
                                        'assistant': st.assistant.name, 'house_rev': (st.house.doc or {}).get('rev')})
             if u.path == '/':
                 return self.index()
+            if u.path == '/favicon.ico':
+                return self.send(204, body=b'')
             if parts[:1] == ['sdk'] and len(parts) == 2 and not manifest.check_path(parts[1]):
                 return self.file(os.path.join(st.sdk, parts[1]))
             if parts[:1] == ['apps'] and len(parts) >= 3 and manifest.check_id(parts[1]):
@@ -572,8 +592,10 @@ class Handler(BaseHTTPRequestHandler):
         if changed:
             log(f'{a}: commit {commit[:10]}')
             st.reload_app(a)
-        self.send(200, {'app': a, 'commit': commit, 'changed': changed, 'screens': st.screens_showing(a),
-                        'preview': f'/app/{a}/'})
+        out = {'app': a, 'commit': commit, 'changed': changed, 'screens': st.screens_showing(a), 'preview': f'/app/{a}/'}
+        if d.get('check'):
+            out['check'] = render_check(self.server.server_address[1], a, [str(x) for x in d.get('say', [])][:5])
+        self.send(200, out)
 
     def do_DELETE(self):
         st = self.st

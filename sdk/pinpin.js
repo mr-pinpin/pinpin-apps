@@ -90,10 +90,11 @@
   };
   P.status = (text) => { statusEl = statusEl || el('pp-status'); statusEl.textContent = text || ''; };
   function dot() { if (dotEl) dotEl.classList.toggle('pp-off', !P.connected); }
-  P.fit = (e, o = {}) => {
-    const max = o.max || 1, min = o.min || 0.4;
-    let s = max; e.style.fontSize = s + 'em';
-    while (s > min && (e.scrollWidth > e.clientWidth + 1 || e.scrollHeight > e.clientHeight + 1)) { s -= 0.05; e.style.fontSize = s + 'em'; }
+  P.fit = (e, o = {}) => {  // max/min: factors of the element's own CSS font size
+    if (!e.dataset.ppBase) { e.style.fontSize = ''; e.dataset.ppBase = parseFloat(getComputedStyle(e).fontSize); }
+    const base = +e.dataset.ppBase, max = o.max || 1, min = o.min || 0.4;
+    let s = max; e.style.fontSize = base * s + 'px';
+    while (s > min && (e.scrollWidth > e.clientWidth + 1 || e.scrollHeight > e.clientHeight + 1)) { s -= 0.05; e.style.fontSize = base * s + 'px'; }
   };
   P.escape = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
