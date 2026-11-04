@@ -9,6 +9,11 @@ cd "$(dirname "$0")/.."
 A="ssh -o BatchMode=yes -o ConnectTimeout=10 pinpin-air"
 $A 'mkdir -p ~/.local/share/pinpin-apps ~/Library/LaunchAgents'
 scp -q -o BatchMode=yes runner/apps_runner.py pinpin-air:.local/share/pinpin-apps/
+# the apps token (root-only on the VPS): the runner's input port only obeys callers that hold it (the Mini)
+if [ -s /root/.config/pinpin-apps/token ]; then
+  scp -q -o BatchMode=yes /root/.config/pinpin-apps/token pinpin-air:.local/share/pinpin-apps/token.new
+  $A 'chmod 600 ~/.local/share/pinpin-apps/token.new && mv ~/.local/share/pinpin-apps/token.new ~/.local/share/pinpin-apps/token'
+fi
 scp -q -o BatchMode=yes deploy/io.mr-pinpin.apps-runner.plist pinpin-air:Library/LaunchAgents/
 $A 'sed -i "" "s#__HOME__#$HOME#g" ~/Library/LaunchAgents/io.mr-pinpin.apps-runner.plist;
     launchctl bootout gui/$(id -u)/io.mr-pinpin.apps-runner 2>/dev/null; sleep 1;

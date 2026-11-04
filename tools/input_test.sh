@@ -9,7 +9,7 @@ T=${QWS_TOOLS:-/root/work/qws-ad}; BL="python3 $T/bench/benchlock.py"
 A="ssh -o BatchMode=yes -o ConnectTimeout=10 pinpin-air"; M="ssh -o BatchMode=yes -o ConnectTimeout=10 pinpin-mini"
 cd "$(dirname "$0")/.."
 log() { echo "$(date -u +%FT%TZ) apps input_test.sh[$$] $*" >> $L; }
-post() { $M "curl -s -m10 -X POST -H Content-Type:application/json -d '$2' 127.0.0.1:57830/api/screens/$ID/$1"; }
+post() { $M "curl -s -m10 -X POST -H Content-Type:application/json -H \"Authorization: Bearer \$(cat ~/pinpin-apps-data/token 2>/dev/null)\" -d '$2' 127.0.0.1:57830/api/screens/$ID/$1"; }
 ON_AIR='cd ~/.local/share/pinpin-apps && /opt/homebrew/bin/python3 -c'
 href() { $A "$ON_AIR 'import apps_runner as r; c=r.CDP(r.cdp_port($ID)); print(c.call(\"Runtime.evaluate\", {\"expression\": \"location.href+\\\" \\\"+scrollY\", \"returnByValue\": True})[\"result\"][\"value\"])'"; }
 wait_href() { for i in $(seq 1 20); do h=$(href 2>/dev/null); case "$h" in *"$1"*) echo "$h"; return 0;; esac; sleep 0.5; done; echo "timeout: $h"; return 1; }

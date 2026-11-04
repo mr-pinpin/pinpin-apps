@@ -13,7 +13,7 @@ BL="python3 $T/bench/benchlock.py"
 MINI=http://192.168.0.50:57830
 A="ssh -o BatchMode=yes -o ConnectTimeout=10 pinpin-air"
 M="ssh -o BatchMode=yes -o ConnectTimeout=10 pinpin-mini"
-api() { $M "curl -s -m10 $*"; }  # the Mini API, from the Mini itself (the VPS is not on the home LAN)
+api() { $M "curl -s -m10 -H \"Authorization: Bearer \$(cat ~/pinpin-apps-data/token 2>/dev/null)\" $*"; }  # the Mini API, from the Mini itself (the VPS is not on the home LAN)
 cd "$(dirname "$0")/.."
 log() { echo "$(date -u +%FT%TZ) apps air_test.sh[$$] $*" >> $L; }
 tok=$($BL take $LOCK --who apps --max 600) || { echo "no bench lock"; exit 2; }
