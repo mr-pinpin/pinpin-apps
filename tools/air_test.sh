@@ -2,26 +2,28 @@
 # End-to-end on the laptop (run from the VPS, as root): a scratch virtual display (screen 47, through pinpin-displays),
 # the weather app assigned to it, the runner (installed/updated as the LaunchAgent) opens its window there; we check the page connected (SSE client on the
 # Mini), speak to it, capture the display region, then undo everything and run air_smoke.sh.
-# Takes the shared bench lock and logs START/END in bench/activity.log (PINPIN_WHO=apps).
-#   bash tools/air_test.sh [APP]
+# Bench lock (quest-wall-screen bench/benchlock.py, AGENTS.md): the test holds it SHARED (LOCK=exclusive while an
+# old-style benchmark campaign runs), air_smoke runs afterwards under EXCLUSIVE. START/END go to bench/activity.log.
+#   [LOCK=shared|exclusive] [QWS_TOOLS=/root/work/qws-ad] bash tools/air_test.sh [APP]
 set -u
 APP=${1:-weather}; ID=47
-QWS=/root/work/quest-wall-screen; L=$QWS/bench/activity.log
+QWS=/root/work/quest-wall-screen; L=$QWS/bench/activity.log   # the shared checkout: runtime files only
+T=${QWS_TOOLS:-/root/work/qws-ad}; LOCK=${LOCK:-shared}           # a checkout with bench/benchlock.py (bdc73dd+)
+BL="python3 $T/bench/benchlock.py"
 MINI=http://192.168.0.50:57830
 A="ssh -o BatchMode=yes -o ConnectTimeout=10 pinpin-air"
 M="ssh -o BatchMode=yes -o ConnectTimeout=10 pinpin-mini"
 api() { $M "curl -s -m10 $*"; }  # the Mini API, from the Mini itself (the VPS is not on the home LAN)
 cd "$(dirname "$0")/.."
 log() { echo "$(date -u +%FT%TZ) apps air_test.sh[$$] $*" >> $L; }
-holder=$(cd $QWS/bench && python3 -c "import stress,sys; print(stress.lock_take(sys.argv[1]))" "apps air_test.sh $APP since $(date -u +%T)")
-[ -n "$holder" ] && { echo "bench lock held: $holder"; exit 2; }
-log "START runner test: scratch display $ID, app $APP, Chrome --app window (bench lock taken)"
+tok=$($BL take $LOCK --who apps --max 600) || { echo "no bench lock"; exit 2; }
+log "START runner test: scratch display $ID, app $APP, Chrome --app window (bench lock $LOCK)"
 cleanup() {
   api "-X POST -H Content-Type:application/json -d '{\"app\": null}' 127.0.0.1:57830/api/screens/$ID/app" >/dev/null
   sleep 5  # the runner closes the window itself once the screen has no app
   $A "pkill -f 'pinpin-apps/profiles/screen-$ID' ; sleep 1; curl -s -m40 -X POST '127.0.0.1:57710/remove?id=$ID' >/dev/null; kill \$(cat /tmp/pp-caf.pid 2>/dev/null) 2>/dev/null; tail -4 ~/.local/share/pinpin-apps/runner.log"
-  (cd $QWS && bash bench/air_smoke.sh); smoke=$?
-  (cd $QWS/bench && python3 -c "import stress; stress.lock_release()")
+  $BL release "$tok"
+  (cd $T && $BL exclusive --who apps --max 300 -- bash bench/air_smoke.sh); smoke=$?
   log "END runner test: result=$result smoke=$([ $smoke = 0 ] && echo pass || echo FAIL) (bench lock released)"
 }
 result=fail; trap cleanup EXIT
