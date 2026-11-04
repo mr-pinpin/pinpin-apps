@@ -83,6 +83,45 @@ def bg(srv):
     return srv
 
 
+class FakeDevTools(BaseHTTPRequestHandler):
+    """A Chrome DevTools port, just enough for local_cdp: /json, and a WebSocket answering Runtime.evaluate,
+    Input.*, Page.captureScreenshot. Records the calls."""
+    calls = []
+    PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+
+    def log_message(self, *a): pass
+
+    def do_GET(self):
+        port = self.server.server_address[1]
+        if self.path == '/json':
+            b = json.dumps([{'type': 'page', 'url': 'http://x/other.html', 'webSocketDebuggerUrl': f'ws://127.0.0.1:{port}/devtools/page/0'},
+                            {'type': 'page', 'url': 'http://127.0.0.1:4188/__render/atlas-webgpu.html?tv=1', 'webSocketDebuggerUrl': f'ws://127.0.0.1:{port}/devtools/page/1'}]).encode()
+            self.send_response(200); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b); return
+        import base64 as b64
+        key = self.headers['Sec-WebSocket-Key']
+        acc = b64.b64encode(hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
+        self.send_response(101); self.send_header('Upgrade', 'websocket'); self.send_header('Connection', 'Upgrade')
+        self.send_header('Sec-WebSocket-Accept', acc); self.end_headers(); self.wfile.flush()
+        page = self.path.rsplit('/', 1)[1]
+        r = self.rfile
+        while True:
+            h = r.read(2)
+            if len(h) < 2: return
+            n = h[1] & 0x7f
+            if n == 126: n = int.from_bytes(r.read(2), 'big')
+            mask = r.read(4); data = bytes(c ^ mask[i % 4] for i, c in enumerate(r.read(n)))
+            m = json.loads(data); type(self).calls.append((page, m['method'], m.get('params', {})))
+            res = {}
+            if m['method'] == 'Runtime.evaluate':
+                e = m['params']['expression']
+                res = {'result': {'value': [0, 0, 1920, 1080, 1920, 1080] if 'screenX' in e else [1920, 1080] if 'innerWidth, innerHeight' in e else 'BUTTON: Go' if 'elementFromPoint' in e else 'atlas'}}
+            elif m['method'] == 'Page.captureScreenshot':
+                res = {'data': self.PNG}
+            out = json.dumps({'id': m['id'], 'result': res}).encode()
+            hdr = bytes([0x81]) + (bytes([len(out)]) if len(out) < 126 else bytes([126]) + len(out).to_bytes(2, 'big'))
+            self.wfile.write(hdr + out); self.wfile.flush()
+
+
 class Apps(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -907,6 +946,41 @@ class Apps(unittest.TestCase):
             self.assertIn('HTTP 401', r.stderr)
         finally:
             os.remove(tp); os.remove(ap)
+
+    def test_local_cdp_screen(self):
+        cfg = os.path.join(self.st.data, 'local-cdp.json')
+        J = {'Content-Type': 'application/json'}
+        # off by default: screen 1 is not local, so input goes to the (absent) laptop runner
+        self.st.runner_url = ''  # (another test may have left a fake runner checked in)
+        self.assertEqual(self.req('POST', '/api/screens/1/click', {'u': 5000, 'v': 5000}, headers=J)[0], 502)
+        dt = bg(ThreadingHTTPServer(('127.0.0.1', 0), FakeDevTools))
+        try:
+            with open(cfg, 'w') as f:
+                json.dump({'1': {'port': dt.server_address[1], 'match': 'atlas-webgpu.html', 'allow': ['shot', 'eval', 'click', 'type']}}, f)
+            FakeDevTools.calls.clear()
+            st, d, _ = self.req('POST', '/api/screens/1/click', {'u': 5000, 'v': 5000}, headers=J)
+            self.assertEqual(st, 200, d); self.assertEqual((d['x'], d['y'], d['element']), (960, 540, 'BUTTON: Go'))
+            self.assertTrue(all(p == '1' for p, _, _ in FakeDevTools.calls))  # the matching page, not the first one
+            presses = [c for _, m, c in FakeDevTools.calls if m == 'Input.dispatchMouseEvent' and c['type'] == 'mousePressed']
+            self.assertEqual((presses[0]['x'], presses[0]['y']), (960, 540))
+            self.assertEqual(self.req('POST', '/api/screens/1/eval', {'js': 'document.title'}, headers=J)[1], {'ok': True, 'value': 'atlas'})
+            st, body, r = self.req('GET', '/api/screens/1/shot?max=960')
+            self.assertEqual(st, 200); self.assertEqual(r.getheader('Content-Type'), 'image/png'); self.assertEqual(r.getheader('X-Viewport'), '1920x1080')
+            clip = [c for _, m, c in FakeDevTools.calls if m == 'Page.captureScreenshot'][-1]['clip']
+            self.assertEqual(clip['scale'], 0.5)
+            # not allowed: scroll (not in "allow"), open and video (never on a kiosk)
+            self.assertEqual(self.req('POST', '/api/screens/1/scroll', {'u': 1, 'v': 1, 'dy': 100}, headers=J)[0], 403)
+            self.assertEqual(self.req('POST', '/api/screens/1/open', {'url': 'https://example.com'}, headers=J)[0], 403)
+            self.assertEqual(self.req('POST', '/api/screens/1/video', {'state': 'pause'}, headers=J)[0], 403)
+            # a match that finds nothing: 404, and switching the file off again needs no restart
+            time.sleep(0.01)
+            with open(cfg, 'w') as f:
+                json.dump({'1': {'port': dt.server_address[1], 'match': 'nothing-like-this'}}, f)
+            os.utime(cfg, (time.time() + 5, time.time() + 5))
+            self.assertEqual(self.req('POST', '/api/screens/1/eval', {'js': '1'}, headers=J)[0], 404)
+        finally:
+            os.remove(cfg); dt.shutdown(); dt.server_close()
+        self.assertEqual(self.req('POST', '/api/screens/1/eval', {'js': '1'}, headers=J)[0], 502)  # off again
 
     def test_authoring_guide(self):
         st, text, r = self.req('GET', '/api/authoring')

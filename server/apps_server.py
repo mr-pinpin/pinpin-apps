@@ -40,6 +40,9 @@
                                     the laptop runner): {u, v (0..10000 of the display, or space:"viewport"), button,
                                     count|double} | {u, v} | {u, v, dx, dy} | {text} | {key|combo: "Cmd+L"};
                                     POST .../eval {js} -> {ok, value}: an expression in the page (DOM checks, live URL)
+  GET  /api/screens/<id>/shot[?max=N] a PNG of the screen's page (token; X-Viewport: WxH). Screens named in
+                                    <data>/local-cdp.json are a Chrome on the Mini (the MINI kiosk): input/eval/shot go to
+                                    its DevTools port here (server/local_cdp.py), u,v of its viewport; never open/video
                                     POST .../video {state: probe|pause|play|low|full} -> {ok, videos: [{playing, muted,
                                     paused_by_us, w, h}], youtube}: the focus policy's lever (play resumes only what it paused)
   POST /api/build                   {prompt, app?, screen?} -> the assistant builds/changes an app with its tools (control page)
@@ -77,6 +80,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(1, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
 import manifest  # noqa: E402
 import kanban  # noqa: E402
+import local_cdp  # noqa: E402
+import base64  # noqa: E402
 
 SHA = re.compile(r'^[0-9a-f]{7,40}$')
 MIME = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -498,6 +503,8 @@ class State:
         self.kanban = kanban.Board(os.path.join(a.data, 'kanban.json'), atomic_write)
         # ?board=scratch: a separate board for checks (tools/nightly_health.py), never mirrored or shown
         self.kanban_scratch = kanban.Board(os.path.join(a.data, 'kanban-scratch.json'), atomic_write)
+        # screens whose page is a Chrome on the Mini itself (the MINI screen's kiosk, K20): server/local_cdp.py
+        self.local = local_cdp.LocalScreens(os.path.join(a.data, 'local-cdp.json'))
         self.runner_url = a.runner or ''  # set by the runner's own polls (X-PinPin-Runner) unless given
         if not self.runner_url:  # or a fixed address in <data>/runner-url (until the runner sends the token)
             try:
@@ -1159,6 +1166,10 @@ class Handler(BaseHTTPRequestHandler):
                     if recovered:
                         h['X-Store-Recovered'] = '1'
                     return self.send(200, body=body, headers=h)
+            if len(parts) == 4 and parts[:2] == ['api', 'screens'] and parts[3] == 'shot' and parts[2].isascii() and parts[2].isdecimal():
+                if not self.authed():
+                    return
+                return self.screen_shot(int(parts[2]), q)
             if parts == ['api', 'screens']:
                 rp = self.headers.get('X-PinPin-Runner', '')
                 if rp.isascii() and rp.isdecimal() and 0 < int(rp) < 65536 and self.has_token():
@@ -1245,6 +1256,47 @@ class Handler(BaseHTTPRequestHandler):
                             'screen_tools': self.screen_tools(),
                             'expect': self.network_expect()},
                 'house_rev': (st.house.doc or {}).get('rev'), 'assistant': st.assistant.name}
+
+    def local_input(self, sid, what, d):
+        try:
+            out = self.st.local.do(sid, what, d)
+        except LookupError as e:
+            return self.send(404, {'error': str(e)})
+        except PermissionError as e:
+            return self.send(403, {'error': str(e)})
+        except (ValueError, TypeError) as e:
+            return self.send(400, {'error': str(e)})
+        except Exception as e:
+            return self.send(502, {'error': f'cdp: {e}'})
+        if what == 'shot':
+            return self.shot_reply(out)
+        return self.send(200, out)
+
+    def shot_reply(self, out):
+        if not out.get('ok') or not out.get('png'):
+            return self.send(502, {'error': out.get('error') or 'no image'})
+        vw, vh = (out.get('viewport') or [0, 0])[:2]
+        return self.send(200, body=base64.b64decode(out['png']), ctype='image/png',
+                         headers={'X-Viewport': f'{vw}x{vh}', 'X-Image': f'{out.get("w")}x{out.get("h")}'})
+
+    def screen_shot(self, sid, q):
+        """GET /api/screens/<id>/shot[?max=900] (token): a PNG of the screen's page: the Mini kiosk (local-cdp.json) or
+        the laptop runner's window for that screen."""
+        st = self.st
+        d = {'max': int(q['max'])} if str(q.get('max', '')).isdigit() else {}
+        if st.local.handles(sid):
+            return self.local_input(sid, 'shot', d)
+        if not st.runner_url:
+            return self.send(502, {'error': 'the laptop runner has not checked in'})
+        req = urllib.request.Request(f'{st.runner_url}/input/{sid}/shot', data=json.dumps(d).encode(), method='POST',
+                                     headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + st.token()})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return self.shot_reply(json.loads(r.read()))
+        except urllib.error.HTTPError as e:
+            return self.send(e.code, body=e.read())
+        except Exception as e:
+            return self.send(502, {'error': f'laptop runner: {e}'})
 
     def screen_tools(self):
         """work-42's Mini screen-tools helper (K20, :57860): its /health, or why not."""
@@ -1509,6 +1561,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {'app': parts[2], 'commit': commit, 'changed': changed})
         if parts[:2] == ['api', 'screens'] and len(parts) == 4 and (parts[2].isascii() and parts[2].isdecimal()):
             sid, what = int(parts[2]), parts[3]
+            if st.local.handles(sid) and what in local_cdp.KINDS + ('open', 'video'):
+                if what in ('open', 'video'):  # the kiosk page IS the screen: never navigated away from here
+                    return self.send(403, {'error': f'{what} is not available on screen {sid} (a Mini kiosk page)'})
+                return self.local_input(sid, what, d)
             if what == 'app':
                 a = d.get('app')
                 if a is not None and a not in st.repo.ids():

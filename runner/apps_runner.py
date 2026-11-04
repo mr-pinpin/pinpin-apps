@@ -56,9 +56,13 @@ def cdp_port(screen):
 
 class CDP:
     """Just enough of the DevTools protocol (a WebSocket client in the stdlib) to navigate and read window bounds."""
-    def __init__(self, port):
+    def __init__(self, port, match=None):
+        """The first page target (whose URL contains match, if given)."""
         tabs = get_json(f'http://127.0.0.1:{port}/json', timeout=2)
-        url = next(t for t in tabs if t.get('type') == 'page')['webSocketDebuggerUrl']
+        pages = [t for t in tabs if t.get('type') == 'page' and (not match or match in t.get('url', ''))]
+        if not pages:
+            raise LookupError(f'no page{" matching " + repr(match) if match else ""} on DevTools port {port}')
+        url = pages[0]['webSocketDebuggerUrl']
         host, rest = url[len('ws://'):].split('/', 1)
         h, port_ = host.rsplit(':', 1)
         self.s = socket.create_connection((h, int(port_)), timeout=10)
@@ -251,10 +255,17 @@ class Input:
     def __init__(self, runner):
         self.r, self.conns, self.locks, self.geo = runner, {}, {}, {}
 
+    def endpoint(self, s):
+        """(DevTools port, URL match) of screen s's page: our own Chrome window per screen."""
+        return cdp_port(s), None
+
+    def alive(self, s):
+        return s in self.r.procs and self.r.procs[s][0].poll() is None
+
     def _conn(self, s):
         c = self.conns.get(s)
         if c is None:
-            c = self.conns[s] = CDP(cdp_port(s))
+            c = self.conns[s] = CDP(*self.endpoint(s))
         return c
 
     def call(self, s, method, params=None):
@@ -301,7 +312,7 @@ class Input:
             return ''
 
     def do(self, s, kind, d):
-        if s not in self.r.procs or self.r.procs[s][0].poll() is not None:
+        if not self.alive(s):
             raise LookupError('no window')
         space = d.get('space', 'display')
         if kind in ('click', 'move', 'scroll'):
@@ -346,6 +357,12 @@ class Input:
             if len(json.dumps(v, default=str)) > 65536:
                 raise ValueError('result over 64 KB: return less')
             return {'ok': True, 'value': v}
+        if kind == 'shot':  # -> {ok, png: base64, w, h}: the visible page, scaled so its long edge is at most max px
+            vw, vh = self.call(s, 'Runtime.evaluate', {'expression': '[innerWidth, innerHeight]', 'returnByValue': True})['result']['value']
+            mx = int(d.get('max') or 0)
+            scale = min(1.0, mx / max(vw, vh)) if mx > 0 else 1.0
+            r = self.call(s, 'Page.captureScreenshot', {'format': 'png', 'clip': {'x': 0, 'y': 0, 'width': vw, 'height': vh, 'scale': scale}})
+            return {'ok': True, 'png': r['data'], 'w': round(vw * scale), 'h': round(vh * scale), 'viewport': [vw, vh]}
         if kind == 'video':
             st = d.get('state', 'probe')
             if st not in VIDEO_STATES:
