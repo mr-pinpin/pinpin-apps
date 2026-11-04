@@ -67,7 +67,10 @@ class CDP:
                         f'Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n').encode())
         buf = b''
         while b'\r\n\r\n' not in buf:
-            buf += self.s.recv(4096)
+            d = self.s.recv(4096)
+            if not d:  # Chrome closed it: fail, never spin
+                raise EOFError('DevTools closed the connection during the handshake')
+            buf += d
         self.buf, self.id = buf.split(b'\r\n\r\n', 1)[1], 0
 
     def _read(self, n):
@@ -339,7 +342,7 @@ def input_server(runner, port):
             if tok and not hmac.compare_digest(got.encode(), tok.encode()):  # only the Mini (it holds the token) may drive us
                 return self.reply(401, {'error': 'token required'})
             parts = [p for p in self.path.split('?')[0].split('/') if p]  # /input/<screen>/<kind>
-            if len(parts) != 3 or parts[0] != 'input' or not parts[1].isdigit():
+            if len(parts) != 3 or parts[0] != 'input' or not (parts[1].isascii() and parts[1].isdecimal()):
                 return self.reply(404, {'error': 'not found'})
             try:
                 d = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
@@ -448,6 +451,22 @@ class Runner:
         sys.exit(0)
 
 
+def sweep_strays():
+    """At start: no window of ours is tracked yet, so any Chrome on one of our profiles is a stray from an earlier
+    runner (they run in their own session and outlive it). Close them; step() reopens what should be open."""
+    out = subprocess.run(['pgrep', '-f', os.path.join(HOME, 'profiles') + '/screen-'], capture_output=True, text=True).stdout
+    pids = [int(p) for p in out.split() if p.isdecimal() and int(p) != os.getpid()]
+    if pids:
+        log(f'closing {len(pids)} stray Chrome processes from an earlier runner')
+        for p in pids:
+            try: os.kill(p, signal.SIGTERM)
+            except OSError: pass
+        time.sleep(2)
+        for p in pids:
+            try: os.kill(p, signal.SIGKILL)
+            except OSError: pass
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--mini', default=os.environ.get('PINPIN_APPS', 'http://192.168.0.50:57830'))
@@ -464,8 +483,13 @@ def main():
     if a.input_port:
         input_server(r, a.input_port)
     log(f'apps runner: {a.mini}, displays {a.displays}, mode {a.mode}, input :{a.input_port}')
+    if not a.dry_run:
+        sweep_strays()
     while True:
-        r.step()
+        try:
+            r.step()
+        except Exception as e:  # one bad check (osascript timeout, Popen error) must not kill the runner: its windows
+            log(f'step failed: {type(e).__name__}: {e}')  # would outlive it and the next runner would stack new ones
         if a.once:
             break
         time.sleep(max(1.0, a.period))

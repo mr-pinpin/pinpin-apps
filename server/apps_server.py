@@ -55,6 +55,7 @@ import os
 import queue
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
@@ -115,6 +116,10 @@ def log(*a):
 
 # ---- the apps repo: every write is one commit
 
+class Conflict(Exception):
+    pass
+
+
 class Repo:
     def __init__(self, root, push=False):
         self.root, self.push, self.lock = root, push, threading.Lock()
@@ -155,27 +160,39 @@ class Repo:
     def head(self, app_id=None):
         return self.git('log', '-1', '--format=%H', *(['--', f'apps/{app_id}'] if app_id else []), check=False)
 
-    def write(self, app_id, files, message, replace=False, by='assistant'):
-        """Returns (problems, commit, changed)."""
+    def write(self, app_id, files, message, replace=False, by='assistant', create=False, base=None):
+        """Returns (problems, commit, changed). Raises Conflict (create: the id exists; base: not the app's current
+        commit), checked under the lock so two writers with the same base can't both pass."""
         with self.lock:
+            exists = app_id in self.ids()
+            if create and exists:
+                raise Conflict(f'app {app_id} exists; pick another id or drop "create"')
+            if base and exists and not self.head(app_id).startswith(base):
+                raise Conflict(f'{app_id} changed since {base}; GET it again and re-apply')
             existing = {} if replace else self.files(app_id)
             problems, result = manifest.validate_files(app_id, files, existing)
             if problems:
                 return problems, None, False
             base = os.path.join(self.apps, app_id)
             old = self.files(app_id)
-            for p in set(old) - set(result):
-                os.remove(os.path.join(base, p))
-            for p, b in result.items():
-                if old.get(p) == b:
-                    continue
-                full = os.path.join(base, p)
-                os.makedirs(os.path.dirname(full), exist_ok=True)
-                tmp = full + '.tmp'
-                with open(tmp, 'wb') as f:
-                    f.write(b); f.flush(); os.fsync(f.fileno())
-                os.replace(tmp, full)
-            return [], *self._commit(app_id, f'{app_id}: {message or "update"} (by {by})')
+            try:
+                for p in set(old) - set(result):
+                    os.remove(os.path.join(base, p))
+                for p, b in result.items():
+                    if old.get(p) == b:
+                        continue
+                    full = os.path.join(base, p)
+                    os.makedirs(os.path.dirname(full), exist_ok=True)
+                    atomic_write(full, b)
+                return [], *self._commit(app_id, f'{app_id}: {message or "update"} (by {by})')
+            except Exception:
+                self.restore_folder(app_id)  # never leave a half-written app on the screens or for the next commit
+                raise
+
+    def restore_folder(self, app_id):
+        """The folder back to its last commit (or gone, if it was never committed)."""
+        self.git('checkout', 'HEAD', '--', f'apps/{app_id}', check=False)
+        self.git('clean', '-fdq', '--', f'apps/{app_id}', check=False)
 
     def remove(self, app_id, message, by='assistant'):
         with self.lock:
@@ -188,9 +205,14 @@ class Repo:
             full = self.git('rev-parse', '--verify', '-q', f'{commit}^{{commit}}', check=False)
             if not full or not self.git('ls-tree', '-r', '--name-only', full, f'apps/{app_id}/manifest.json', check=False):
                 return f'{commit}: no {app_id} at that commit', None, False
-            self.git('rm', '-r', '-q', '--ignore-unmatch', f'apps/{app_id}')
-            self.git('checkout', full, '--', f'apps/{app_id}')
-            return '', *self._commit(app_id, f'{app_id}: rollback to {full[:10]} (by {by})')
+            try:
+                self.git('rm', '-r', '-q', '--ignore-unmatch', f'apps/{app_id}')
+                self.git('checkout', full, '--', f'apps/{app_id}')
+                return '', *self._commit(app_id, f'{app_id}: rollback to {full[:10]} (by {by})')
+            except Exception as e:
+                self.git('reset', '-q', 'HEAD', '--', f'apps/{app_id}', check=False)
+                self.restore_folder(app_id)
+                return f'rollback failed, the app was left as it was: {e}', None, False
 
     def _commit(self, app_id, msg):
         if os.path.isdir(os.path.join(self.apps, app_id)):  # after a removal, git rm already staged it
@@ -445,9 +467,19 @@ class State:
             self.private_ok = set()
 
     # ---- app stores (pinpin.store): <data>/store/<app>.json, its previous version kept as <app>.json.1
-    def write_store(self, app_id, raw):
+    @staticmethod
+    def etag(body):
+        return hashlib.sha256(body).hexdigest()[:16]
+
+    def write_store(self, app_id, raw, if_match=None):
+        """Returns (True, new etag), or (False, (current body, its etag)) when if_match is not the current version:
+        then another page saved meanwhile, and the writer must merge its own changes onto the current copy."""
         path = os.path.join(self.data, 'store', app_id + '.json')
         with self.opens_lock:
+            if if_match is not None:
+                cur_body, _ = self.read_store(app_id)
+                if self.etag(cur_body) != if_match:
+                    return False, (cur_body, self.etag(cur_body))
             if os.path.exists(path):
                 try:
                     with open(path, 'rb') as f:
@@ -458,6 +490,7 @@ class State:
                 except (OSError, ValueError):
                     pass
             atomic_write(path, raw)
+            return True, self.etag(raw)
 
     def read_store(self, app_id):
         """(body, recovered): the store, or its previous version if the current one is unreadable, or {} if neither."""
@@ -549,13 +582,29 @@ class State:
         if dry:  # a preview or render check: everything checked, nothing delivered
             return ''
         with self.opens_lock:
-            msgs = self.inbox(target)[-(self.MAX_INBOX - 1):]
-            msgs.append({'id': f'{int(time.time() * 1000)}-{len(msgs)}', 'from': sender, 'kind': kind, 'data': data, 'at': now()})
+            msgs = self.inbox(target)
+            if len(msgs) >= self.MAX_INBOX:  # never drop an unread message to make room
+                return f'{target} inbox is full ({self.MAX_INBOX} unread): open {target} so it can catch up'
+            import uuid
+            msgs.append({'id': uuid.uuid4().hex, 'from': sender, 'kind': kind, 'data': data, 'at': now()})
             self.inbox_write(target, msgs)
         for s in self.screens_showing(target):
             self.hub.send(str(s), 'message', {'app': target})
         self.hub.send('preview:' + target, 'message', {'app': target})
         return ''
+
+    def claim_messages(self, app_id, who, hold=30):
+        """Unclaimed (or expired) messages, now claimed by `who` for `hold` seconds; a crashed claimer's come back."""
+        with self.opens_lock:
+            msgs, t, out = self.inbox(app_id), time.time(), []
+            for m in msgs:
+                c = m.get('claim') or {}
+                if c.get('by') in (None, who) or c.get('until', 0) < t:
+                    m['claim'] = {'by': who, 'until': t + hold}
+                    out.append({k: v for k, v in m.items() if k != 'claim'})
+            if out:
+                self.inbox_write(app_id, msgs)
+            return out
 
     def ack_messages(self, app_id, ids):
         with self.opens_lock:
@@ -698,8 +747,8 @@ def thumb_png(st, app_id, port):
         if not (os.path.exists(path) and time.time() - os.path.getmtime(path) < THUMB_TTL):
             tool = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools', 'render_check.py')
             try:
-                subprocess.run([sys.executable, tool, f'http://127.0.0.1:{port}/app/{app_id}/', '--wait', '3',
-                                '--size', '960x600', '--shot', path + '.tmp'], capture_output=True, timeout=60)
+                run_group([sys.executable, tool, f'http://127.0.0.1:{port}/app/{app_id}/', '--wait', '3',
+                           '--size', '960x600', '--shot', path + '.tmp'], timeout=60)
                 os.replace(path + '.tmp', path)
             except Exception as e:
                 log(f'thumb {app_id}: {e}')
@@ -707,6 +756,20 @@ def thumb_png(st, app_id, port):
                     return None
     with open(path, 'rb') as f:
         return f.read()
+
+
+def run_group(args, timeout):
+    """subprocess.run whose whole process group dies on timeout (render_check starts Chrome; killing only the
+    python child would leave that Chrome and its profile behind)."""
+    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        out, err = p.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(args, p.returncode, out, err)
+    except subprocess.TimeoutExpired:
+        try: os.killpg(p.pid, signal.SIGKILL)
+        except OSError: pass
+        p.communicate()
+        raise
 
 
 def render_check(port, app_id, say):
@@ -719,7 +782,7 @@ def render_check(port, app_id, say):
     for t in say:
         args += ['--say', t]
     try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=60)
+        r = run_group(args, timeout=90)
         return json.loads(r.stdout)
     except Exception as e:
         return {'error': f'render check failed: {e}'}
@@ -756,6 +819,19 @@ def html_escape(s):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.0'
+
+    def handle_one_request(self):
+        # an unexpected error answers 500 instead of dropping the connection silently (and is logged)
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            pass
+        except Exception as e:
+            log(f'request {getattr(self, "command", "?")} {getattr(self, "path", "?")}: {type(e).__name__}: {e}')
+            try:
+                self.send(500, {'error': f'{type(e).__name__}'})
+            except Exception:
+                pass
     st = None  # State
     timeout = 30  # seconds per socket read/write: a slow or stalled upload is dropped, never holds a thread forever
 
@@ -776,6 +852,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != 'HEAD':
             self.wfile.write(body)
+
+    def has_token(self):
+        """True when the request carries the token, or no token is configured (the tests); never logs, never grace."""
+        tok = self.st.token()
+        if not tok:
+            return True
+        got = (self.headers.get('Authorization') or '').removeprefix('Bearer ').strip() or (self.headers.get('X-PinPin-Token') or '').strip()
+        return bool(got) and hmac.compare_digest(got.encode(), tok.encode())
 
     def authed(self):
         """Powerful calls (input, eval, assign, open, build, app writes) need the shared token: <data>/token, sent as
@@ -827,13 +911,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send(400, {'error': 'body must be an object'}); return None
         return d
 
-    def file(self, path):
+    def file(self, path, sandbox=False):
         try:
             with open(path, 'rb') as f:
                 b = f.read()
         except OSError:
             return self.send(404, {'error': 'not found'})
-        self.send(200, body=b, ctype=MIME.get(os.path.splitext(path)[1].lower(), 'application/octet-stream'))
+        ext = os.path.splitext(path)[1].lower()
+        # an app's raw .html/.svg opened directly must not run with this origin (the control page's token lives here)
+        hdr = {'Content-Security-Policy': FRAME_CSP} if sandbox and ext in ('.html', '.svg') else None
+        self.send(200, body=b, ctype=MIME.get(ext, 'application/octet-stream'), headers=hdr)
 
     def page(self, app_id, screen):
         """The trusted shell: host.js plus the app in a sandboxed iframe (/frame/<app>/)."""
@@ -896,14 +983,14 @@ class Handler(BaseHTTPRequestHandler):
                 rel = '/'.join(parts[2:])
                 if manifest.check_path(rel):
                     return self.send(404, {'error': 'not found'})
-                return self.file(os.path.join(st.repo.apps, parts[1], *parts[2:]))
+                return self.file(os.path.join(st.repo.apps, parts[1], *parts[2:]), sandbox=True)
             if parts[:1] == ['app'] and len(parts) == 2 and manifest.check_id(parts[1]):
                 if not u.path.endswith('/'):
                     return self.send(302, {}, headers={'Location': f'/app/{parts[1]}/' + (f'?{u.query}' if u.query else '')})
                 return self.page(parts[1], 'preview:' + parts[1])
             if parts[:1] == ['frame'] and len(parts) == 2 and (manifest.check_id(parts[1]) or parts[1] == '_idle'):
                 return self.frame(parts[1], q.get('screen', '')[:80])
-            if parts[:1] == ['screen'] and len(parts) == 2 and parts[1].isdigit():
+            if parts[:1] == ['screen'] and len(parts) == 2 and (parts[1].isascii() and parts[1].isdecimal()):
                 return self.page(st.house.mapping().get(int(parts[1])), parts[1])
             if u.path == '/events':
                 return self.events(q.get('screen', ''))
@@ -936,21 +1023,29 @@ class Handler(BaseHTTPRequestHandler):
                 if parts[3:] == ['inbox']:
                     if not self.from_host():
                         return
+                    if q.get('claim'):  # a screen takes its messages for 30 s, so two screens don't both apply one
+                        return self.send(200, st.claim_messages(a, q['claim'][:40]))
                     return self.send(200, st.inbox(a))
                 if parts[3:] == ['thumb.png']:
                     png = thumb_png(st, a, self.server.server_address[1])
                     return self.send(200, body=png, ctype='image/png') if png else self.send(404, {'error': 'no thumbnail (no Chrome here)'})
                 if parts[3:] == ['icon.png']:
-                    png = icon_png(st, a, int(q.get('size', 256)))
+                    sz = q.get('size', '256')
+                    png = icon_png(st, a, int(sz) if sz.isascii() and sz.isdecimal() else 256)
                     return self.send(200, body=png, ctype='image/png') if png else self.send(404, {'error': 'no icon'})
                 if parts[3:] == ['data']:
                     if not self.from_host():
                         return
                     body, recovered = st.read_store(a)
-                    return self.send(200, body=body, headers={'X-Store-Recovered': '1'} if recovered else None)
+                    h = {'ETag': st.etag(body)}
+                    if recovered:
+                        h['X-Store-Recovered'] = '1'
+                    return self.send(200, body=body, headers=h)
             if parts == ['api', 'screens']:
                 rp = self.headers.get('X-PinPin-Runner', '')
-                if rp.isdigit():  # the laptop runner polls with its input port: that's where input goes
+                if rp.isascii() and rp.isdecimal() and 0 < int(rp) < 65536 and self.has_token():
+                    # the laptop runner polls with its input port: that's where input (and the token) goes. Only an
+                    # authenticated runner may set it, or any LAN device could redirect input and collect the token.
                     st.runner_url = f'http://{self.client_address[0]}:{int(rp)}'
                 return self.send(200, self.screen_list())
             return self.send(404, {'error': 'not found'})
@@ -1034,6 +1129,10 @@ class Handler(BaseHTTPRequestHandler):
         if m is None:
             return self.send(404, {'error': f'no app {app_id!r}'})
         p = urllib.parse.urlparse(url)
+        try:
+            p.port
+        except ValueError:
+            return self.send(400, {'error': 'bad port in url'})
         if p.scheme not in ('http', 'https') or not p.hostname:
             return self.send(400, {'error': 'url must be http(s)'})
         host = p.hostname + (f':{p.port}' if p.port else '')
@@ -1094,23 +1193,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, {'error': 'not JSON'})
             if a not in st.repo.ids():
                 return self.send(404, {'error': f'no app {a}'})
-            st.write_store(a, raw)
-            return self.send(200, {'ok': True})
+            im = self.headers.get('If-Match')
+            ok, info = st.write_store(a, raw, im.strip().strip('"') if im else None)
+            if not ok:  # another page saved first: here is the current copy, merge and retry
+                return self.send(409, body=info[0], headers={'ETag': info[1]})
+            for sc in st.screens_showing(a):  # the other pages showing this app pick up the new copy
+                st.hub.send(str(sc), 'store', {'app': a, 'etag': info})
+            return self.send(200, {'ok': True, 'etag': info}, headers={'ETag': info})
         if parts[3:]:
             return self.send(404, {'error': 'not found'})
         d = self.json_body()
         if d is None:
             return
-        exists = a in st.repo.ids()
-        if d.get('create') and exists:
-            return self.send(409, {'error': f'app {a} exists; pick another id or drop "create"', 'commit': st.repo.head(a)})
-        if d.get('base') and exists and not st.repo.head(a).startswith(str(d['base'])):
-            return self.send(409, {'error': f'{a} changed since {d["base"]}; GET it again and re-apply', 'commit': st.repo.head(a)})
         try:
             problems, commit, changed = st.repo.write(a, d.get('files'), str(d.get('message', ''))[:200],
-                                                     bool(d.get('replace')), str(d.get('by', 'assistant'))[:40])
-        except RuntimeError as e:
-            return self.send(500, {'error': str(e)})
+                                                     bool(d.get('replace')), str(d.get('by', 'assistant'))[:40],
+                                                     create=bool(d.get('create')), base=str(d['base']) if d.get('base') else None)
+        except Conflict as e:
+            return self.send(409, {'error': str(e), 'commit': st.repo.head(a)})
+        except Exception as e:
+            return self.send(500, {'error': f'write failed, the app was left as it was: {e}'})
         if problems:
             return self.send(400, {'error': 'invalid app', 'problems': problems})
         if changed:
@@ -1171,7 +1273,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, {'error': 'from (the sending app, set by its host) and kind required'})
             dry = bool(d.get('dry'))
             err = st.post_message(sender, parts[2], kind, d.get('data'), dry)
-            return self.send(403 if 'may not' in err or 'accept' in err else 404 if err.startswith('no app') else 400 if err else 200,
+            return self.send(403 if 'may not' in err or 'accept' in err else 404 if err.startswith('no app') else
+                             429 if 'inbox is full' in err else 400 if err else 200,
                              {'error': err} if err else {'queued': not dry, 'dry': dry})
         protected = parts == ['api', 'status', 'component'] or parts == ['api', 'build'] or (parts[:2] == ['api', 'apps'] and parts[3:] == ['rollback']) or \
             (parts[:2] == ['api', 'screens'] and len(parts) == 4 and parts[3] != 'shown')
@@ -1216,7 +1319,7 @@ class Handler(BaseHTTPRequestHandler):
             if changed:
                 st.reload_app(parts[2])
             return self.send(200, {'app': parts[2], 'commit': commit, 'changed': changed})
-        if parts[:2] == ['api', 'screens'] and len(parts) == 4 and parts[2].isdigit():
+        if parts[:2] == ['api', 'screens'] and len(parts) == 4 and (parts[2].isascii() and parts[2].isdecimal()):
             sid, what = int(parts[2]), parts[3]
             if what == 'app':
                 a = d.get('app')

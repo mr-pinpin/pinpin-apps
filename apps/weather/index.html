@@ -100,12 +100,15 @@ async function setPlace(name) {
 
 pinpin.onVoice((text) => {
   const t = text.trim().replace(/[.!?]+$/, '');
-  let m = t.match(/(?:weather|forecast)?\s*(?:in|for|at)\s+(.+)$/i) || t.match(/^(?:show|set|change(?: place)? to)\s+(.+)$/i);
+  // a place only from a phrase that starts like one ("in Paris", "weather for Rome", "change to Oslo"), never from
+  // the middle of a sentence ("what is it" is not a place)
+  let m = t.match(/^(?:(?:the\s+)?(?:weather|forecast)\s+)?(?:in|for|at)\s+(.+)$/i) || t.match(/^(?:show|set|change(?: place)? to)\s+(.+)$/i);
   if (/\b(refresh|update|reload)\b/i.test(t)) return load();
   if (/\bfahrenheit\b/i.test(t)) { cfg.units = 'fahrenheit'; pinpin.store.set('config', Object.assign(pinpin.store.get('config', {}), { units: 'fahrenheit' })); return load(); }
   if (/\b(celsius|centigrade)\b/i.test(t)) { cfg.units = 'celsius'; pinpin.store.set('config', Object.assign(pinpin.store.get('config', {}), { units: 'celsius' })); return load(); }
   if (m) return setPlace(m[1]);
-  if (t.split(/\s+/).length <= 3) return setPlace(t);  // a bare city name
+  const words = t.toLowerCase().split(/\s+/);
+  if (words.length <= 3 && !words.some((w) => /^(what|is|it|its|it's|how|the|a|an|please|thanks|thank|you|show|me|today|now|tomorrow|weather|forecast|time|clock|and|or|no|yes|ok|okay|stop|again|refresh|update)$/.test(w))) return setPlace(t);  // a bare city name
   pinpin.toast('Say “weather in <city>”');
 });
 

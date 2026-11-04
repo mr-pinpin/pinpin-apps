@@ -29,10 +29,14 @@ function clean(s) {
 function split(text) {
   return text.split(/\s*(?:,|;|\band\b|\bplus\b|\balso\b)\s*/i).map(clean).filter((x) => x && x.length < 40 && !/^(and|please|thanks?|ok(ay)?|wait)$/.test(x));
 }
-function find(name) {
+function find(name) {  // the same item (plural or not), else the one item whose words contain all of name's words
   name = clean(name);
-  const s = (x) => x.replace(/(es|s)$/, '');
-  return items.findIndex((i) => i.t === name || s(i.t) === s(name) || i.t.includes(name) || name.includes(i.t));
+  const sing = (x) => x.split(' ').map((w) => w.replace(/(es|s)$/, '')).join(' ');
+  const exact = items.findIndex((i) => i.t === name || sing(i.t) === sing(name));
+  if (exact >= 0) return exact;
+  const want = sing(name).split(' ');
+  const hits = items.map((i, k) => [k, sing(i.t).split(' ')]).filter(([, ws]) => want.every((w) => ws.includes(w)));
+  return hits.length === 1 ? hits[0][0] : -1;  // "remove tea" never matches "steak"; ambiguous: no guess
 }
 function save() { pinpin.store.set('items', items); }
 

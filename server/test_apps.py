@@ -580,6 +580,10 @@ class Apps(unittest.TestCase):
                                   headers={'Origin': 'null', 'Content-Type': 'application/json', 'X-PinPin': '1'})[0], 403)
         self.assertEqual(self.req('POST', '/api/apps/mrecv/inbox', {'from': 'msender', 'kind': 'add-items', 'data': 'x' * 20000})[0], 400)
         self.assertEqual(self.req('GET', '/api/apps/mrecv/inbox', headers={})[0], 403)  # only host pages read inboxes
+        a1 = self.req('GET', '/api/apps/mrecv/inbox?claim=screen1')[1]
+        self.assertEqual(len(a1), 1)
+        self.assertEqual(self.req('GET', '/api/apps/mrecv/inbox?claim=screen2')[1], [])  # already taken by screen 1
+        self.assertEqual(len(self.req('GET', '/api/apps/mrecv/inbox?claim=screen1')[1]), 1)  # its own claim again
         self.assertEqual(self.req('POST', '/api/apps/mrecv/inbox/ack', {'ids': [inbox[0]['id']]})[1], {'acked': 1})
         self.assertEqual(self.req('GET', '/api/apps/mrecv/inbox')[1], [])
         # manifests: send and accepts are validated
@@ -673,6 +677,71 @@ class Apps(unittest.TestCase):
         self.req('POST', '/api/screens/47/app', {'app': None})
         self.assertNotIn(47, {r['screen'] for r in self.req('GET', '/api/screens')[1]})
         self.assertEqual(json.loads(urlget(f'http://127.0.0.1:{hp}/house'))['rev'], before['rev'])
+
+    def test_store_versions_never_lose_a_concurrent_save(self):
+        # two pages showing the shopping list: each saves with the version it loaded
+        st, d, r = self.req('PUT', '/api/apps/shopping/data', {'items': ['bread']})
+        v0 = r.getheader('ETag')
+        h = lambda v: {'X-PinPin': '1', 'Content-Type': 'application/json', 'If-Match': v}
+        st, d, r = self.req('PUT', '/api/apps/shopping/data', {'items': ['bread', 'milk']}, headers=h(v0))  # screen 1
+        self.assertEqual(st, 200); v1 = r.getheader('ETag')
+        st, cur, r = self.req('PUT', '/api/apps/shopping/data', {'items': ['bread', 'eggs']}, headers=h(v0))  # screen 2, stale
+        self.assertEqual(st, 409)  # refused: it would have dropped "milk"
+        self.assertEqual((cur, r.getheader('ETag')), ({'items': ['bread', 'milk']}, v1))  # the current copy to merge onto
+        self.assertEqual(self.req('GET', '/api/apps/shopping/data')[1], {'items': ['bread', 'milk']})
+        self.assertEqual(self.req('PUT', '/api/apps/shopping/data', {'items': ['bread', 'milk', 'eggs']}, headers=h(v1))[0], 200)
+        # other screens showing the app hear about it
+        self.req('POST', '/api/screens/52/app', {'app': 'shopping'})
+        got, close = self.events('52')
+        st, d, r = self.req('PUT', '/api/apps/shopping/data', {'items': []})
+        self.assertTrue(self.wait(lambda: ('store', {'app': 'shopping', 'etag': d['etag']}) in got)); close()
+        self.req('POST', '/api/screens/52/app', {'app': None})
+
+    def test_robustness(self):
+        # odd digits, bad sizes and ports answer instead of killing the request thread
+        for path in ('/screen/%C2%B2', '/api/apps/weather/icon.png?size=x', '/proxy?app=weather&url=http://api.open-meteo.com:99999/'):
+            self.assertIn(self.req('GET', path)[0], (200, 400, 404), path)
+        self.assertEqual(self.req('POST', '/api/screens/%C2%B2/say', {'text': 'x'})[0], 404)
+        # create/base checked under the lock: the second of two writers with the same base is refused
+        self.req('PUT', '/api/apps/racer', {'files': self.app('racer')})
+        base = self.req('GET', '/api/apps/racer')[1]['commit']
+        self.assertEqual(self.req('PUT', '/api/apps/racer', {'files': {'a.js': '1'}, 'base': base})[0], 200)
+        self.assertEqual(self.req('PUT', '/api/apps/racer', {'files': {'a.js': '2'}, 'base': base})[0], 409)
+        # a write that fails half-way leaves the app as it was (here: the commit step fails)
+        before = self.req('GET', '/api/apps/racer')[1]['files']
+        real = self.st.repo._commit
+        def boom(*a): raise RuntimeError('disk full')
+        self.st.repo._commit = boom
+        try:
+            self.assertEqual(self.req('PUT', '/api/apps/racer', {'files': {'a.js': 'half', 'b.js': 'x'}})[0], 500)
+        finally:
+            self.st.repo._commit = real
+        self.assertEqual(self.req('GET', '/api/apps/racer')[1]['files'], before)
+        # raw app html is sandboxed (the control page's token lives at this origin)
+        self.assertIn('sandbox', self.req('GET', '/apps/weather/index.html')[2].getheader('Content-Security-Policy'))
+        # inbox ids are unique and a full inbox refuses instead of dropping unread messages
+        snd = {'id': 'isnd', 'name': 'S', 'description': 'd', 'permissions': {'send': ['ircv']}}
+        rcv = {'id': 'ircv', 'name': 'R', 'description': 'd', 'accepts': ['k']}
+        self.req('PUT', '/api/apps/isnd', {'files': {'index.html': 'x', 'manifest.json': json.dumps(snd)}})
+        self.req('PUT', '/api/apps/ircv', {'files': {'index.html': 'x', 'manifest.json': json.dumps(rcv)}})
+        for i in range(self.st.MAX_INBOX):
+            self.req('POST', '/api/apps/ircv/inbox', {'from': 'isnd', 'kind': 'k', 'data': i})
+        self.assertEqual(self.req('POST', '/api/apps/ircv/inbox', {'from': 'isnd', 'kind': 'k', 'data': 'x'})[0], 429)
+        ids = [m['id'] for m in self.req('GET', '/api/apps/ircv/inbox')[1]]
+        self.assertEqual((len(ids), len(set(ids))), (self.st.MAX_INBOX, self.st.MAX_INBOX))
+
+    def test_runner_checkin_needs_the_token(self):
+        tp = os.path.join(self.st.data, 'token')
+        with open(tp, 'w') as f:
+            f.write('tok-abc')
+        try:
+            self.st.runner_url = ''
+            self.req('GET', '/api/screens', headers={'X-PinPin-Runner': '8080'})  # a guest phone
+            self.assertEqual(self.st.runner_url, '')
+            self.req('GET', '/api/screens', headers={'X-PinPin-Runner': '57735', 'Authorization': 'Bearer tok-abc'})
+            self.assertEqual(self.st.runner_url, 'http://127.0.0.1:57735')
+        finally:
+            os.remove(tp); self.st.runner_url = ''
 
     def test_authoring_guide(self):
         st, text, r = self.req('GET', '/api/authoring')

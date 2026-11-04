@@ -17,6 +17,7 @@ import base64
 import json
 import os
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -39,7 +40,10 @@ class WS:
                         f'Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n').encode())
         buf = b''
         while b'\r\n\r\n' not in buf:
-            buf += self.s.recv(4096)
+            d = self.s.recv(4096)
+            if not d:
+                raise EOFError('DevTools closed the connection during the handshake')
+            buf += d
         self.buf = buf.split(b'\r\n\r\n', 1)[1]
         self.id = 0
         self.events = []
@@ -130,7 +134,7 @@ def main():
                                        f'--proxy-bypass-list=<-loopback>;{target.hostname}:{target.port or 80}']  # order matters
     p = subprocess.Popen([CHROME, '--headless=new', f'--remote-debugging-port={port}', f'--user-data-dir={prof}',
                           f'--window-size={w},{h}', '--hide-scrollbars', '--no-first-run', '--use-mock-keychain', *net, 'about:blank'],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     try:
         for _ in range(50):
             try:
@@ -182,9 +186,12 @@ def main():
         print(json.dumps({'url': a.url, 'errors': errors, 'failed_on_purpose': len(failed), 'console': console[-20:], 'missing': missing, 'text': text[:1500]}, indent=1, ensure_ascii=False))
         sys.exit(1 if errors or missing else 0)
     finally:
-        p.terminate()
+        try: os.killpg(p.pid, signal.SIGTERM)  # Chrome and all its helpers
+        except OSError: pass
         try: p.wait(5)
-        except Exception: p.kill()
+        except Exception:
+            try: os.killpg(p.pid, signal.SIGKILL)
+            except OSError: pass
         shutil.rmtree(prof, ignore_errors=True)
 
 

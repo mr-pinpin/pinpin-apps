@@ -78,7 +78,7 @@ function split(text) {
 }
 
 let S = { have: [], recipes: [], source: '', view: 'list', pick: 0, step: 0, timers: [] };
-let askTimer = null, asking = 0;
+let askTimer = null, asking = 0, reqSeq = 0;  // asking: the busy flag; reqSeq only ever grows (which answer is current)
 
 function save() { pinpin.store.set('state', S); }
 
@@ -129,7 +129,7 @@ function fromCatalogue(have, exclude, n) {
 async function suggest(more) {
   if (!S.have.length) { S.recipes = []; render(); return; }
   const n = pinpin.config.suggestions || 3, exclude = more ? S.recipes.map((r) => r.title) : [];
-  const ticket = ++asking;
+  const ticket = ++reqSeq; asking = 1;
   const quick = fromCatalogue(S.have, exclude, n);  // instant ideas while Claude thinks (it takes 10-30 s)
   if (quick.length && S.view === 'list') { S.recipes = quick; S.source = 'ideas: built-in list'; S.pick = 0; S.step = 0; }
   render();
@@ -140,7 +140,7 @@ async function suggest(more) {
     (pinpin.config.diet ? ` Diet: ${pinpin.config.diet}.` : ''),
     { json: true, model: 'haiku', system: 'You run a recipe app on a small screen above the kitchen oven, read from 1-2 m away. Reply with JSON only: ' +
       '{"recipes":[{"title":"short name","minutes":20,"ingredients":["quantity + ingredient, e.g. 3 eggs"],"uses":["ingredients from my list"],"missing":["at most 2 non-staples I lack"],"steps":["3 to 7 short imperative steps, at most 14 words each, with times like 10 minutes where it matters"]}]}' });
-  if (ticket !== asking) return;  // a newer request superseded this one
+  if (ticket !== reqSeq) return;  // a newer request superseded this one
   const js = r.json && Array.isArray(r.json.recipes) ? r.json.recipes : null;
   if (js && js.length) {
     out = js.filter((x) => x && x.title && Array.isArray(x.steps) && x.steps.length).slice(0, n)

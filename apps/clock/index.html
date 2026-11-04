@@ -72,7 +72,7 @@ pinpin.onVoice((text) => {
   let m;
   if (/\b(show|with) seconds\b|^seconds( on)?$/i.test(t)) { cfg.seconds = true; pinpin.store.set('config', Object.assign(pinpin.store.get('config', {}), { seconds: true })); return tick(); }
   if (/\b(hide|no|without) seconds\b|^seconds off$/i.test(t)) { cfg.seconds = false; pinpin.store.set('config', Object.assign(pinpin.store.get('config', {}), { seconds: false })); return tick(); }
-  if ((m = t.match(/(?:clock|time)?\s*(?:in|for|at)\s+(.+)$/i))) return setPlace(m[1]);
+  if ((m = t.match(/^(?:(?:the\s+)?(?:clock|time)\s+)?(?:in|for|at)\s+(.+)$/i))) return setPlace(m[1]);  // phrase start only
   pinpin.toast('Say “clock for Paris” or “show seconds”');
 });
 

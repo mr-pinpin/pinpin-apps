@@ -20,6 +20,11 @@
   // never write before the real data has loaded: a write from a page that started while the Mini was unreachable would
   // replace the app's saved data with a partial copy. Until then changes are kept here and merged on top.
   let loaded = false, pendingKeys = new Set();
+  // versioned saves: `synced` is the copy the Mini confirmed (version `etag`); the keys where `data` differs from it are
+  // ours to save. A save carries the version it was based on; if another screen saved first the Mini answers 409 with
+  // its copy, and only our changed keys are merged onto it. Failed saves are retried until they land.
+  let synced = {}, etag = null, saving = null, retryMs = 0, retryTimer = null;
+  const dirtyKeys = () => [...new Set([...Object.keys(data), ...Object.keys(synced)])].filter((k) => JSON.stringify(data[k]) !== JSON.stringify(synced[k]));
 
   const HDR = { 'X-PinPin': '1' };  // the server only accepts proxy/data/ask calls that carry it (frames can't)
   function post(msg) { if (frame.contentWindow) frame.contentWindow.postMessage(msg, '*'); }
@@ -29,11 +34,50 @@
     if (preview) return;  // previews and render checks never overwrite what the real screens keep
     if (!loaded) return;  // see above: merged and written once the load succeeds
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      fetch('/api/apps/' + app + '/data', { method: 'PUT', body: JSON.stringify(data), headers: Object.assign({ 'Content-Type': 'application/json' }, HDR) })
-        .catch(() => {});
-    }, 400);
+    saveTimer = setTimeout(sync, 400);
   }
+  async function sync() {  // -> true once everything we changed is on the Mini
+    if (preview || !loaded) return true;
+    if (saving) { await saving; return dirtyKeys().length ? sync() : true; }
+    if (!dirtyKeys().length) return true;
+    clearTimeout(saveTimer); clearTimeout(retryTimer);
+    saving = (async () => {
+      for (let round = 0; round < 5; round++) {
+        const sent = JSON.parse(JSON.stringify(data));
+        let r;
+        try {
+          r = await fetch('/api/apps/' + app + '/data', { method: 'PUT', body: JSON.stringify(sent),
+            headers: Object.assign({ 'Content-Type': 'application/json' }, etag ? { 'If-Match': etag } : {}, HDR) });
+        } catch (e) { r = null; }
+        if (r && r.ok) { synced = sent; etag = r.headers.get('ETag') || etag; retryMs = 0; return true; }
+        if (r && r.status === 409) {  // another screen saved first: our changed keys onto its copy, then again
+          const theirs = await r.json().catch(() => ({})), mine = dirtyKeys();
+          const merged = JSON.parse(JSON.stringify(theirs));
+          for (const k of mine) { if (k in data) merged[k] = data[k]; else delete merged[k]; }
+          synced = theirs; etag = r.headers.get('ETag'); data = merged;
+          needRestart = true;  // the app should show what the other screen added
+          continue;
+        }
+        break;  // offline, or refused: keep the change and retry later
+      }
+      retryMs = Math.min(30000, (retryMs || 1000) * 2);
+      retryTimer = setTimeout(sync, retryMs);
+      return false;
+    })();
+    const ok = await saving; saving = null;
+    if (ok && needRestart) restartApp();
+    return ok;
+  }
+  let needRestart = false;
+  function restartApp() { needRestart = false; if (ready) { ready = false; frame.src = frame.src; } }
+  async function flushThen(fn) {  // never drop a pending change: save (up to 2 s) before reloading
+    if (dirtyKeys().length) await Promise.race([sync(), new Promise((r) => setTimeout(r, 2000))]);
+    fn();
+  }
+  addEventListener('pagehide', () => {  // last chance (the window closes): a fire-and-forget save
+    if (!preview && loaded && dirtyKeys().length) fetch('/api/apps/' + app + '/data', { method: 'PUT', keepalive: true,
+      body: JSON.stringify(data), headers: Object.assign({ 'Content-Type': 'application/json' }, etag ? { 'If-Match': etag } : {}, HDR) }).catch(() => {});
+  });
 
   async function handle(m) {
     if (m.t === 'hello') {
@@ -83,10 +127,11 @@
     handle(e.data);
   });
 
-  const delivered = new Set();
+  const delivered = new Set(), PAGE = Math.random().toString(36).slice(2, 10);
   async function inbox() {
     try {
-      const r = await fetch('/api/apps/' + app + '/inbox', { cache: 'no-store', headers: HDR });
+      if (preview) return;  // previews neither claim nor acknowledge: the real screens get the messages
+      const r = await fetch('/api/apps/' + app + '/inbox?claim=' + encodeURIComponent(screen + '-' + PAGE), { cache: 'no-store', headers: HDR });
       if (!r.ok) return;
       for (const msg of await r.json()) {
         if (delivered.has(msg.id)) continue;
@@ -98,7 +143,17 @@
   function connect() {
     const es = new EventSource('/events?screen=' + encodeURIComponent(screen));
     es.addEventListener('hello', () => { H.connected = true; dot(); post({ t: 'net', connected: true }); });
-    es.addEventListener('reload', () => location.reload());
+    es.addEventListener('reload', () => flushThen(() => location.reload()));
+    es.addEventListener('store', async (e) => {  // another screen saved this app's data
+      const d = JSON.parse(e.data);
+      if (!loaded || d.etag === etag) return;
+      if (dirtyKeys().length) return sync();  // ours is pending: the save will merge (409) and restart the app
+      try {
+        const r = await fetch('/api/apps/' + app + '/data', { cache: 'no-store', headers: HDR });
+        if (r.ok) { data = synced = await r.json(); etag = r.headers.get('ETag'); restartApp(); }
+      } catch (err) {}
+    });
+    es.addEventListener('hello', () => { if (dirtyKeys().length) sync(); });  // back online: save what waited
     es.addEventListener('voice', (e) => { const d = JSON.parse(e.data); voice(d.text, d); });
     es.addEventListener('message', () => { if (ready) inbox(); });
     es.onerror = () => { H.connected = false; dot(); post({ t: 'net', connected: false }); };
@@ -113,6 +168,7 @@
         const r = await fetch('/api/apps/' + app + '/data', { cache: 'no-store', headers: HDR });
         if (!r.ok) return false;
         const server = await r.json();
+        etag = r.headers.get('ETag'); synced = JSON.parse(JSON.stringify(server));
         if (pendingKeys.size) {  // changes made while offline win over the loaded copy, key by key
           for (const k of pendingKeys) { if (k in data) server[k] = data[k]; else delete server[k]; }
           pendingKeys.clear();
