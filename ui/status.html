@@ -15,6 +15,7 @@
   .morning h3 { margin: 0 0 8px; color: var(--accent); font-size: 20px; }
   ul.check { list-style: none; padding: 0; margin: 0; } ul.check li { padding: 5px 0 5px 30px; position: relative; }
   ul.check li::before { content: ""; position: absolute; left: 0; top: 8px; width: 18px; height: 18px; border: 2px solid var(--muted); border-radius: 4px; }
+  ul.check li.plain { padding-left: 22px; } ul.check li.plain::before { width: 7px; height: 7px; border: 0; border-radius: 50%; background: var(--muted); top: 14px; left: 6px; }
   ul.check li.done { color: var(--muted); } ul.check li.done::before { background: var(--good); border-color: var(--good); }
   ul.check li.done::after { content: "✓"; position: absolute; left: 4px; top: 4px; color: #0d1117; font-weight: 900; font-size: 15px; }
   .grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
@@ -79,7 +80,7 @@ function render(lines) {
     const m = l.match(/^\s*[-*] (\[( |x|X)\] )?(.*)$/);
     if (m) {
       if (!inList) { html += '<ul class="check">'; inList = true; }
-      html += `<li class="${m[2] && m[2] !== ' ' ? 'done' : ''}"${m[1] ? '' : ' style="padding-left:30px"'}>${inline(m[3])}</li>`;
+      html += `<li class="${!m[1] ? 'plain' : m[2] !== ' ' ? 'done' : ''}">${inline(m[3])}</li>`;
     } else {
       if (inList) { html += '</ul>'; inList = false; }
       if (l.trim()) html += `<p>${inline(l)}</p>`;
