@@ -77,6 +77,7 @@ reports JS errors and the text on the page.
 | `POST /api/screens/<id>/app {app \| null}` | writes house.json `apps` (If-Match, retried on 409), and the screen reloads |
 | `POST /api/screens/<id>/say {text}` | dictation to the app on that screen |
 | `POST /api/screens/<id>/reload` | |
+| `POST /api/screens/<id>/open {url \| null}` | the runner navigates that screen's window to the URL (and creates the window if needed). `null` goes back to the app. Poll `GET /api/screens` until `shown_seq == seq` |
 | `POST /api/ask {app, screen, prompt, system?, json?}` | → the assistant (`--ask-url`, work-42's `/api/ask`) or the stub |
 | `GET /proxy?app=&url=` | GET only, to hosts in the app's `permissions.fetch` |
 | `GET /screen/<id>`, `GET /app/<id>/`, `GET /events?screen=` | the page a screen shows, a preview, server-sent events |
@@ -107,7 +108,15 @@ never committed.
 - [x] M2: server with the create/update/rollback API (a commit per change), screen mapping, events, proxy, ask stub; 16 offline tests against the real house server
 - [x] M3: starter apps: weather (open-meteo, no key, "weather in <city>") and kitchen recipes (voice ingredients → Claude or the built-in list, one step at a time)
 - [x] M4: the server on the Mini (LaunchAgent io.mr-pinpin.apps), with headless Chrome render checks of both apps (`tools/render_check.py`, and `check: true` on PUT)
-- [ ] M5: the runner on the laptop: an app window on a virtual display, streamed by the atlas, under the bench lock with air_smoke (`tools/air_test.sh`). Finding: Chrome started over ssh can't reach the GUI session, so the runner must be the Aqua LaunchAgent
+- [x] M5: the runner on the laptop (LaunchAgent io.mr-pinpin.apps-runner). `tools/air_test.sh` passed twice (2026-11-04 02:28 and 02:35 UTC):
+  - the window sits exactly on scratch display 47 (from Chrome's own bounds) and the page connects in 1 s;
+  - voice reaches the app;
+  - `/open` of a URL lands in 1 s, and the window goes back to the app afterwards;
+  - the window closes when the app is unassigned;
+  - air_smoke passes at 50 fps.
+  Finding: Chrome started over ssh can't reach the GUI session, so the runner must be the Aqua LaunchAgent.
+- [x] M5b: `POST /api/screens/<id>/open {url}` for the assistant's open_url (one runner for apps and web pages, navigated over CDP)
 - [x] M6: /api/ask forwarded to work-42's assistant (now the Air instance, 192.168.0.102:57840; the Mini instance when it's up). Recipes answered by Claude in 15–30 s, with built-in ideas shown at once
-- [ ] M7: headset dictation to an app screen (`/say`), with work-c4
+- [ ] M7: headset dictation to an app screen (`/say`): work-c4 is adding an app-mic button beside the Claude button (ASSIST flag)
+- [ ] M9: an app on a real screen: waits for the user to say which screen is the kitchen one
 - [ ] M8: the assistant creates a new app end to end ("make me a timer app") and it appears on a screen. Rehearsed through the API: `apps/timer` was made from docs/AUTHORING.md with `check: true`, rendered with no errors, and its voice worked

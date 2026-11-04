@@ -27,7 +27,7 @@ cleanup() {
   log "END runner test: result=$result smoke=$([ $smoke = 0 ] && echo pass || echo FAIL) (bench lock released)"
 }
 result=fail; trap cleanup EXIT
-$A "caffeinate -u -t 120 & echo \$! > /tmp/pp-caf.pid; curl -s -m40 -X POST '127.0.0.1:57710/displays?id=$ID&w=1920&h=1200&scale=1' >/dev/null; sleep 3; curl -s 127.0.0.1:57710/displays"; echo
+$A "caffeinate -u -t 120 >/dev/null 2>&1 & echo \$! > /tmp/pp-caf.pid; curl -s -m40 -X POST '127.0.0.1:57710/displays?id=$ID&w=1920&h=1200&scale=1' >/dev/null; sleep 3; curl -s 127.0.0.1:57710/displays"; echo
 api "-X POST -H Content-Type:application/json -d '{\"app\": \"$APP\"}' 127.0.0.1:57830/api/screens/$ID/app" || { echo "assign failed"; exit 1; }; echo
 bash deploy/install-air.sh  # the runner must live in the GUI session (LaunchAgent): Chrome started from ssh cannot reach it
 ok=
