@@ -472,6 +472,61 @@ class Apps(unittest.TestCase):
         st, d, r = self.req('GET', '/proxy?app=net2&url=' + urllib.parse.quote(f'http://{self.up_host}/redirect', safe=''))
         self.assertEqual(st, 302); self.assertEqual(Upstream.hits, 1)
 
+    def test_proxy_pinned_ip(self):
+        """Pinned-IP fetch (defect 15a): the proxy resolves a host EXACTLY ONCE and connects only to that IP, so
+        DNS cannot rebind to the LAN between a check and the fetch. IPv6 handled; redirects stay returned-not-followed."""
+        import apps_server
+        real = socket.getaddrinfo
+        up_port = self.up.server_address[1]
+        self.req('PUT', '/api/apps/pin', {'files': self.app('pin', perms={'fetch': ['rebind.test', 'evil.test', 'v6.test']})})
+
+        # 1) ONE lookup, pinned to it. A rebinding resolver would differ on a 2nd call — there must be NO 2nd call.
+        self.st.private_ok.add('rebind.test')
+        calls = []
+        def one_shot(host, port, *a, **k):
+            calls.append((host, port))
+            return [(socket.AF_INET, socket.SOCK_STREAM, 0, '', ('127.0.0.1', up_port))]
+        apps_server._getaddrinfo = one_shot
+        try:
+            Upstream.hits = 0
+            st, d, _ = self.req('GET', '/proxy?app=pin&url=' + urllib.parse.quote(f'http://rebind.test:{up_port}/v1/x?a=1', safe=''))
+            self.assertEqual(st, 200, d)
+            self.assertEqual(len(calls), 1, f'expected ONE DNS lookup (no rebinding window), got {calls}')
+            self.assertEqual(Upstream.hits, 1)
+            # a redirect from the pinned host is returned, not followed
+            Upstream.hits = 0; calls.clear()
+            st2, _, _ = self.req('GET', '/proxy?app=pin&url=' + urllib.parse.quote(f'http://rebind.test:{up_port}/redirect', safe=''))
+            self.assertEqual(st2, 302); self.assertEqual(Upstream.hits, 1); self.assertEqual(len(calls), 1)
+        finally:
+            apps_server._getaddrinfo = real; self.st.private_ok.discard('rebind.test')
+
+        # 2) a host that resolves to a LAN address (not private_ok) is refused, even though it is allowlisted.
+        apps_server._getaddrinfo = lambda h, p, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 0, '', ('10.1.2.3', p))]
+        try:
+            self.assertEqual(self.req('GET', '/proxy?app=pin&url=http://evil.test/')[0], 403)
+        finally:
+            apps_server._getaddrinfo = real
+
+        # 3) IPv6: a reachable v6 is pinned and fetched; a link-local v6 is refused.
+        class _V6(ThreadingHTTPServer):
+            address_family = socket.AF_INET6
+        v6 = _V6(('::1', 0), Upstream)
+        threading.Thread(target=v6.serve_forever, daemon=True).start()
+        v6_port = v6.server_address[1]
+        self.st.private_ok.add('v6.test')
+        apps_server._getaddrinfo = lambda h, p, *a, **k: [(socket.AF_INET6, socket.SOCK_STREAM, 0, '', ('::1', v6_port, 0, 0))]
+        try:
+            Upstream.hits = 0
+            st, d, _ = self.req('GET', '/proxy?app=pin&url=' + urllib.parse.quote(f'http://v6.test:{v6_port}/', safe=''))
+            self.assertEqual(st, 200, d); self.assertEqual(Upstream.hits, 1)
+        finally:
+            apps_server._getaddrinfo = real; self.st.private_ok.discard('v6.test'); v6.shutdown()
+        apps_server._getaddrinfo = lambda h, p, *a, **k: [(socket.AF_INET6, socket.SOCK_STREAM, 0, '', ('fe80::1', p, 0, 0))]
+        try:
+            self.assertEqual(self.req('GET', '/proxy?app=pin&url=http://v6.test/')[0], 403)
+        finally:
+            apps_server._getaddrinfo = real
+
     def test_upload_limits(self):
         sk = socket.create_connection(('127.0.0.1', self.port), timeout=10)  # announced as 13 MB: refused before reading it
         sk.sendall(b'PUT /api/apps/big HTTP/1.0\r\nContent-Type: application/json\r\nContent-Length: 13631488\r\n\r\n{')

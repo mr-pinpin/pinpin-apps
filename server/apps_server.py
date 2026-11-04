@@ -56,7 +56,9 @@ import queue
 import re
 import shutil
 import signal
+import http.client
 import socket
+import ssl
 import subprocess
 import tempfile
 import sys
@@ -819,6 +821,61 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 NO_REDIRECT = urllib.request.build_opener(_NoRedirect)
 
 
+class _NonGlobalHost(Exception):
+    """The host resolved only to loopback/LAN/link-local addresses — refuse (apps reach the internet only)."""
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Connect to a pinned IP but keep the Host header, SNI and certificate check on the original hostname."""
+    def __init__(self, host, ip, port, **kw):
+        super().__init__(host, port, **kw)
+        self._pinned_ip = ip
+
+    def connect(self):
+        sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """Connect to a pinned IP; the Host header still carries the hostname (http.client uses self.host)."""
+    def __init__(self, host, ip, port, **kw):
+        super().__init__(host, port, **kw)
+        self._pinned_ip = ip
+
+    def connect(self):
+        self.sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+
+
+_getaddrinfo = socket.getaddrinfo  # the ONE name resolution; indirection so tests can patch it alone (and
+#                                    create_connection's own literal-IP lookup stays real)
+
+
+def pinned_fetch(url, headers, allow_private, timeout=10):
+    """GET with no DNS-rebinding window: resolve the host EXACTLY ONCE, require a global address (unless the host is
+    explicitly allowed via allow_private), then connect to that one IP while the Host header, TLS SNI and
+    certificate verification stay on the hostname. A 3xx is returned as-is (http.client never follows it).
+    Returns (status, body, content-type). Raises _NonGlobalHost for a non-global host."""
+    p = urllib.parse.urlparse(url)
+    port = p.port or (443 if p.scheme == 'https' else 80)
+    infos = _getaddrinfo(p.hostname, port, type=socket.SOCK_STREAM)   # the ONLY name lookup
+    ip = next((sa[0].split('%')[0] for *_, sa in infos
+               if allow_private or ipaddress.ip_address(sa[0].split('%')[0]).is_global), None)
+    if ip is None:
+        raise _NonGlobalHost(p.hostname)
+    path = (p.path or '/') + (('?' + p.query) if p.query else '')
+    if p.scheme == 'https':
+        conn = _PinnedHTTPSConnection(p.hostname, ip, port, timeout=timeout, context=ssl.create_default_context())
+    else:
+        conn = _PinnedHTTPConnection(p.hostname, ip, port, timeout=timeout)
+    try:
+        conn.request('GET', path, headers=headers)
+        r = conn.getresponse()
+        body = r.read(MAX_PROXY + 1)
+        return r.status, body, r.headers.get('Content-Type', 'application/octet-stream')
+    finally:
+        conn.close()
+
+
 def html_escape(s):
     return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
@@ -1147,8 +1204,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(403, {'error': f'{host} is not in {app_id} permissions.fetch {allowed}'})
         if p.username or p.password:
             return self.send(400, {'error': 'no user:password@ in proxied urls'})
-        if not st.public_host(p.hostname):
-            return self.send(403, {'error': f'{p.hostname} is on the home network or this machine; apps only reach the internet'})
         sec = st.secrets.get(p.hostname, {})
         if sec.get('query'):
             qs = urllib.parse.parse_qsl(p.query) + list(sec['query'].items())
@@ -1158,12 +1213,13 @@ class Handler(BaseHTTPRequestHandler):
             hit = st.proxy_cache.get(key)
         if hit and time.time() - hit[0] < PROXY_TTL:
             return self.send(hit[1], body=hit[2], ctype=hit[3], headers={'X-Proxy-Cache': 'hit'})
-        req = urllib.request.Request(url, headers={'User-Agent': 'pinpin-apps/1', **sec.get('headers', {})})
+        # Pinned-IP fetch: resolve the host EXACTLY ONCE and connect only to that one global IP, so DNS can't
+        # rebind to the LAN between a check and the fetch. public_host()'s separate lookup is gone.
         try:
-            with NO_REDIRECT.open(req, timeout=10) as r:  # a redirect is returned, never followed (it could point anywhere)
-                body, code, ctype = r.read(MAX_PROXY + 1), r.status, r.headers.get('Content-Type', 'application/octet-stream')
-        except urllib.error.HTTPError as e:
-            body, code, ctype = e.read(MAX_PROXY + 1), e.code, e.headers.get('Content-Type', 'text/plain')
+            code, body, ctype = pinned_fetch(url, {'User-Agent': 'pinpin-apps/1', **sec.get('headers', {})},
+                                             p.hostname in st.private_ok)
+        except _NonGlobalHost:
+            return self.send(403, {'error': f'{p.hostname} is on the home network or this machine; apps only reach the internet'})
         except Exception as e:
             if hit:  # upstream down: serve the stale copy rather than nothing
                 return self.send(hit[1], body=hit[2], ctype=hit[3], headers={'X-Proxy-Cache': 'stale'})
