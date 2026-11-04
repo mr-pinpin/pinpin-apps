@@ -555,6 +555,30 @@ class Apps(unittest.TestCase):
         # the floor plan is relayed from the house server (the stand-in has none: an error, not a crash)
         self.assertIn(self.req('GET', '/house-plan.svg')[0], (200, 404, 502))
 
+    def test_app_to_app_messages(self):
+        snd = {'id': 'msender', 'name': 'S', 'description': 'd', 'permissions': {'send': ['mrecv']}}
+        rcv = {'id': 'mrecv', 'name': 'R', 'description': 'd', 'accepts': ['add-items']}
+        self.req('PUT', '/api/apps/msender', {'files': {'index.html': 'x', 'manifest.json': json.dumps(snd)}})
+        self.req('PUT', '/api/apps/mrecv', {'files': {'index.html': 'x', 'manifest.json': json.dumps(rcv)}})
+        got, close = self.events('preview:mrecv')
+        st, d, _ = self.req('POST', '/api/apps/mrecv/inbox', {'from': 'msender', 'kind': 'add-items', 'data': {'items': ['milk']}})
+        self.assertEqual(st, 200, d)
+        self.assertTrue(self.wait(lambda: any(e == 'message' for e, _ in got))); close()
+        inbox = self.req('GET', '/api/apps/mrecv/inbox')[1]
+        self.assertEqual([(m['from'], m['kind'], m['data']) for m in inbox], [('msender', 'add-items', {'items': ['milk']})])
+        # not allowed: wrong kind, a sender without permission, a frame (Origin null), oversized
+        self.assertEqual(self.req('POST', '/api/apps/mrecv/inbox', {'from': 'msender', 'kind': 'delete-all', 'data': {}})[0], 403)
+        self.assertEqual(self.req('POST', '/api/apps/mrecv/inbox', {'from': 'weather', 'kind': 'add-items', 'data': {}})[0], 403)
+        self.assertEqual(self.req('POST', '/api/apps/mrecv/inbox', {'from': 'msender', 'kind': 'add-items'},
+                                  headers={'Origin': 'null', 'Content-Type': 'application/json', 'X-PinPin': '1'})[0], 403)
+        self.assertEqual(self.req('POST', '/api/apps/mrecv/inbox', {'from': 'msender', 'kind': 'add-items', 'data': 'x' * 20000})[0], 400)
+        self.assertEqual(self.req('GET', '/api/apps/mrecv/inbox', headers={})[0], 403)  # only host pages read inboxes
+        self.assertEqual(self.req('POST', '/api/apps/mrecv/inbox/ack', {'ids': [inbox[0]['id']]})[1], {'acked': 1})
+        self.assertEqual(self.req('GET', '/api/apps/mrecv/inbox')[1], [])
+        # manifests: send and accepts are validated
+        bad = dict(snd, permissions={'send': ['../x']})
+        self.assertEqual(self.req('PUT', '/api/apps/msender', {'files': {'manifest.json': json.dumps(bad)}})[0], 400)
+
     def test_authoring_guide(self):
         st, text, r = self.req('GET', '/api/authoring')
         self.assertEqual(st, 200); self.assertIn('PUT http://', text)

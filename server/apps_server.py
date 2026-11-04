@@ -23,6 +23,8 @@
   GET  /api/apps/<app>/thumb.png    a 960x600 render of the app (cached per commit, refreshed every 10 min)
   POST /api/apps/<app>/rollback     {commit} -> folder as at that commit, as a new commit
   GET|PUT /api/apps/<app>/data      the app's stored JSON (SDK pinpin.store), outside git
+  POST /api/apps/<app>/inbox        {from, kind, data} app-to-app message (host pages only; sender permissions.send,
+                                    receiver accepts);  GET .../inbox, POST .../inbox/ack {ids}: the receiver's host
   GET  /api/screens                 [{screen, app, display, clients, w, h}] from house.json
   POST /api/screens/<id>/app        {app: id|null} -> house.json "apps" section, that screen reloads
   POST /api/screens/<id>/say        {text} -> the page's pinpin.onVoice handlers
@@ -434,6 +436,55 @@ class State:
     def assistant(self, v):
         self._assistant = v
 
+    # ---- app-to-app messages: a per-app inbox on the Mini. Only host pages post (they stamp their own app id); the
+    # sender's manifest must list the target in permissions.send and the target must accept the kind. Messages wait
+    # until the target app is open somewhere and its handler acknowledges them.
+    MAX_INBOX, MAX_MSG = 100, 16 << 10
+
+    def inbox_path(self, app_id):
+        d = os.path.join(self.data, 'inbox'); os.makedirs(d, exist_ok=True)
+        return os.path.join(d, app_id + '.json')
+
+    def inbox(self, app_id):
+        try:
+            with open(self.inbox_path(app_id)) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return []
+
+    def inbox_write(self, app_id, msgs):
+        p = self.inbox_path(app_id)
+        with open(p + '.tmp', 'w') as f:
+            json.dump(msgs, f)
+        os.replace(p + '.tmp', p)
+
+    def post_message(self, sender, target, kind, data):
+        """'' when queued, else why not."""
+        sm, tm = self.repo.manifest(sender), self.repo.manifest(target)
+        if sm is None or tm is None:
+            return f'no app {sender if sm is None else target!r}'
+        if target not in (sm.get('permissions') or {}).get('send', []):
+            return f'{sender} may not message {target} (its manifest permissions.send)'
+        if kind not in (tm.get('accepts') or []):
+            return f'{target} does not accept "{kind}" messages (accepts {tm.get("accepts", [])})'
+        if len(json.dumps(data)) > self.MAX_MSG:
+            return 'message over 16 KB'
+        with self.opens_lock:
+            msgs = self.inbox(target)[-(self.MAX_INBOX - 1):]
+            msgs.append({'id': f'{int(time.time() * 1000)}-{len(msgs)}', 'from': sender, 'kind': kind, 'data': data, 'at': now()})
+            self.inbox_write(target, msgs)
+        for s in self.screens_showing(target):
+            self.hub.send(str(s), 'message', {'app': target})
+        self.hub.send('preview:' + target, 'message', {'app': target})
+        return ''
+
+    def ack_messages(self, app_id, ids):
+        with self.opens_lock:
+            msgs = self.inbox(app_id)
+            keep = [m for m in msgs if m['id'] not in set(ids)]
+            self.inbox_write(app_id, keep)
+            return len(msgs) - len(keep)
+
     def build_url(self):
         """The assistant's app-building endpoint: <data>/build-url if set, else /api/build next to its /api/ask."""
         try:
@@ -755,6 +806,10 @@ class Handler(BaseHTTPRequestHandler):
                                            'commit': st.repo.head(a), 'screens': st.screens_showing(a)})
                 if parts[3:] == ['history']:
                     return self.send(200, st.repo.history(a))
+                if parts[3:] == ['inbox']:
+                    if not self.from_host():
+                        return
+                    return self.send(200, st.inbox(a))
                 if parts[3:] == ['thumb.png']:
                     png = thumb_png(st, a, self.server.server_address[1])
                     return self.send(200, body=png, ctype='image/png') if png else self.send(404, {'error': 'no thumbnail (no Chrome here)'})
@@ -965,6 +1020,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, st.assistant.ask({k: d[k] for k in ('app', 'screen', 'prompt', 'system', 'json', 'model') if k in d}))
             except Exception as e:
                 return self.send(502, {'error': f'assistant: {e}', 'stub': True})
+        if parts[:2] == ['api', 'apps'] and len(parts) in (4, 5) and parts[3] == 'inbox' and manifest.check_id(parts[2]):
+            if not self.from_host():
+                return
+            if len(parts) == 5 and parts[4] == 'ack':  # the target's host: these were handled
+                ids = d.get('ids')
+                if not (isinstance(ids, list) and all(isinstance(i, str) for i in ids)):
+                    return self.send(400, {'error': 'ids: a list'})
+                return self.send(200, {'acked': st.ack_messages(parts[2], ids)})
+            sender, kind = d.get('from'), d.get('kind')
+            if not (isinstance(sender, str) and manifest.check_id(sender) and isinstance(kind, str)):
+                return self.send(400, {'error': 'from (the sending app, set by its host) and kind required'})
+            err = st.post_message(sender, parts[2], kind, d.get('data'))
+            return self.send(403 if 'may not' in err or 'accept' in err else 404 if err.startswith('no app') else 400 if err else 200,
+                             {'error': err} if err else {'queued': True})
         if parts == ['api', 'build']:  # the control page's "ask Claude to build an app": the assistant runs its app tools
             prompt = d.get('prompt')
             if not (isinstance(prompt, str) and prompt.strip()):

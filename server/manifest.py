@@ -13,7 +13,7 @@ EXT = {'.html', '.js', '.css', '.json', '.svg', '.png', '.jpg', '.jpeg', '.webp'
 MAX_FILE = 2 << 20
 MAX_APP = 8 << 20
 MAX_FILES = 64
-PERMS = {'fetch', 'voice', 'ask', 'storage'}
+PERMS = {'fetch', 'voice', 'ask', 'storage', 'send'}
 
 
 def check_id(app_id):
@@ -61,11 +61,17 @@ def validate(m, app_id):
         f = perms.get('fetch', [])
         if not (isinstance(f, list) and all(isinstance(h, str) and HOST.match(h) for h in f)):
             e.append('permissions.fetch: needs a list of host names (host or host:port)')
+        snd = perms.get('send', [])
+        if not (isinstance(snd, list) and all(isinstance(x, str) and ID.match(x) for x in snd)):
+            e.append('permissions.send: needs a list of app ids this app may message')
         for k in ('voice', 'ask', 'storage'):
             if k in perms and not isinstance(perms[k], bool):
                 e.append(f'permissions.{k}: not a boolean')
     if 'icon' in m and not (isinstance(m['icon'], str) and not check_path(m['icon']) and m['icon'].lower().endswith(('.svg', '.png'))):
         e.append('icon: a .svg or .png file in the app folder, e.g. "icon.svg" (square, readable at 64 px)')
+    acc = m.get('accepts', [])
+    if not (isinstance(acc, list) and all(isinstance(x, str) and re.match(r'^[a-z][a-z0-9-]{0,31}$', x) for x in acc)):
+        e.append('accepts: a list of message kinds other apps may send this one (e.g. "add-items")')
     if 'hidden' in m and not isinstance(m['hidden'], bool):
         e.append('hidden: not a boolean')
     if 'config' in m and not isinstance(m['config'], dict):
