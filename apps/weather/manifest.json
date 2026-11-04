@@ -2,8 +2,33 @@
  "id": "weather",
  "name": "Weather",
  "description": "Now, the next hours and the next five days for one place (open-meteo, no key). Say \"weather in <city>\" to change the place.",
+ "icon": "icon.svg",
  "version": 1,
- "size": {"aspect": "16:10", "min_px": [800, 500], "preferred_px": [1920, 1200], "distance_m": 2.5},
- "permissions": {"fetch": ["api.open-meteo.com", "geocoding-api.open-meteo.com"], "voice": true, "storage": true},
- "config": {"place": "Moscow", "lat": 55.7558, "lon": 37.6173, "units": "celsius", "refresh_min": 10}
+ "size": {
+  "aspect": "16:10",
+  "min_px": [
+   800,
+   500
+  ],
+  "preferred_px": [
+   1920,
+   1200
+  ],
+  "distance_m": 2.5
+ },
+ "permissions": {
+  "fetch": [
+   "api.open-meteo.com",
+   "geocoding-api.open-meteo.com"
+  ],
+  "voice": true,
+  "storage": true
+ },
+ "config": {
+  "place": "Moscow",
+  "lat": 55.7558,
+  "lon": 37.6173,
+  "units": "celsius",
+  "refresh_min": 10
+ }
 }

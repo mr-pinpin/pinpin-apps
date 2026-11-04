@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shopping list</title>
+<style>
+  header { display: flex; align-items: baseline; gap: 0.6rem; }
+  #count { color: var(--pp-muted); font-size: 0.9rem; }
+  #list { columns: 2; column-gap: 1.2rem; font-size: 1.15rem; line-height: 1.45; }
+  #list div { break-inside: avoid; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #list .n { color: var(--pp-accent); display: inline-block; min-width: 1.4em; }
+  #list .done { color: var(--pp-muted); text-decoration: line-through; }
+  #list .new { color: var(--pp-good); }
+  .empty { font-size: 1.1rem; color: var(--pp-muted); }
+</style>
+</head>
+<body>
+<header><h1>Shopping list</h1><div id="count"></div></header>
+<main id="list" class="pp-grow"></main>
+<div class="pp-hint">Say <b>add milk and eggs</b> · <b>got the eggs</b> · <b>remove bread</b> · <b>clear</b></div>
+<script>
+const $ = (id) => document.getElementById(id);
+let items = [];   // [{t: "milk", done: false, at: ms}]
+let fresh = new Set();
+
+function clean(s) {
+  return s.toLowerCase().replace(/[.!?]+$/, '').replace(/^(some|a|an|the|more|also)\s+/, '').trim();
+}
+function split(text) {
+  return text.split(/\s*(?:,|;|\band\b|\bplus\b|\balso\b)\s*/i).map(clean).filter((x) => x && x.length < 40 && !/^(and|please|thanks?|ok(ay)?|wait)$/.test(x));
+}
+function find(name) {
+  name = clean(name);
+  const s = (x) => x.replace(/(es|s)$/, '');
+  return items.findIndex((i) => i.t === name || s(i.t) === s(name) || i.t.includes(name) || name.includes(i.t));
+}
+function save() { pinpin.store.set('items', items); }
+
+function render() {
+  const open = items.filter((i) => !i.done), done = items.filter((i) => i.done);
+  $('count').textContent = items.length ? `${open.length} to buy` + (done.length ? ` · ${done.length} done` : '') : '';
+  if (!items.length) { $('list').innerHTML = '<div class="empty">The list is empty.<br>Say “add milk, bread and eggs”.</div>'; return; }
+  $('list').innerHTML = open.concat(done).map((i, k) =>
+    `<div class="${i.done ? 'done' : fresh.has(i.t) ? 'new' : ''}"><span class="n">${k + 1}</span>${pinpin.escape(i.t)}</div>`).join('');
+  pinpin.fit($('list'), { max: 1, min: 0.45 });
+}
+
+pinpin.onVoice((text) => {
+  const t = text.trim().replace(/[.!?]+$/, '');
+  let m;
+  fresh = new Set();
+  if (/^(clear|clear (it|all|everything|the list)|start over|new list|empty (it|the list))$/i.test(t)) { items = []; save(); render(); return pinpin.toast('List cleared'); }
+  if (/^(clear|remove|delete) (the )?(done|bought|ticked|crossed)( ones| items)?$/i.test(t)) { items = items.filter((i) => !i.done); save(); return render(); }
+  if ((m = t.match(/^(?:remove|delete|take off|cross off|no|forget)\s+(.+)$/i))) {
+    const shown = items.filter((i) => !i.done).concat(items.filter((i) => i.done));  // the numbers on screen
+    const gone = new Set(split(m[1].replace(/\bnumber\s+/gi, '')).map((x) => /^\d+$/.test(x) ? shown[+x - 1] : items[find(x)]).filter(Boolean));
+    if (!gone.size) pinpin.toast('Not on the list');
+    items = items.filter((i) => !gone.has(i)); save(); return render();
+  }
+  if ((m = t.match(/^(?:got|bought|i (?:got|bought|have)|we (?:got|have)|done|tick|check(?: off)?)\s+(.+)$/i))) {
+    let n = 0;
+    for (const x of split(m[1])) { const k = find(x); if (k >= 0) { items[k].done = true; n++; } }
+    if (!n) pinpin.toast('Not on the list'); save(); return render();
+  }
+  m = t.match(/^(?:add|put|we need|i need|need|buy|get)\s+(.+)$/i);
+  const add = split(m ? m[1] : t).filter((x) => x.split(' ').length <= 5);
+  if (!add.length) return pinpin.toast('Say “add milk”');
+  for (const a of add) {
+    const k = find(a);
+    if (k >= 0) items[k].done = false; else items.push({ t: a, done: false, at: Date.now() });
+    fresh.add(k >= 0 ? items[k].t : a);
+  }
+  save(); render();
+});
+
+pinpin.ready.then(() => { items = pinpin.store.get('items', []); render(); });
+</script>
+</body>
+</html>

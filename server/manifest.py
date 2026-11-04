@@ -64,6 +64,8 @@ def validate(m, app_id):
         for k in ('voice', 'ask', 'storage'):
             if k in perms and not isinstance(perms[k], bool):
                 e.append(f'permissions.{k}: not a boolean')
+    if 'icon' in m and not (isinstance(m['icon'], str) and not check_path(m['icon']) and m['icon'].lower().endswith(('.svg', '.png'))):
+        e.append('icon: a .svg or .png file in the app folder, e.g. "icon.svg" (square, readable at 64 px)')
     if 'config' in m and not isinstance(m['config'], dict):
         e.append('config: not an object')
     return e
@@ -104,6 +106,10 @@ def validate_files(app_id, files, existing):
             e += validate(json.loads(out['manifest.json']), app_id)
         except ValueError as x:
             e.append(f'manifest.json: invalid JSON ({x})')
+        else:
+            icon = json.loads(out['manifest.json']).get('icon') if isinstance(json.loads(out['manifest.json']), dict) else None
+            if isinstance(icon, str) and icon not in out:
+                e.append(f'icon: {icon} is not among the app files')
     if sum(len(b) for b in out.values()) > MAX_APP:
         e.append(f'app: over {MAX_APP} bytes in all')
     return e, (out if not e else None)

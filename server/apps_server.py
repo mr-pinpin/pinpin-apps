@@ -5,7 +5,8 @@
   GET  /app/<app>/                  preview of an app with the SDK, screen "preview"
   GET  /apps/<app>/<path>           raw app files;  GET /sdk/<file>  the SDK
   GET  /events?screen=<id>          server-sent events to the page: reload, voice {text}
-  GET  /api/apps                    [{id, name, description, size, permissions, commit}]
+  GET  /api/apps                    the catalog: [{id, name, description, size, permissions, screens, icon (data: URI),
+                                    icon_png (URL of a PNG, ?size=N, for the headset)}]
   GET  /api/apps/<app>              {manifest, files: {path: text}, commit}
   GET  /api/authoring               docs/AUTHORING.md (how to write an app), for the assistant's context
   PUT  /api/apps/<app>              {files: {path: text|null}, message, replace?, by?, check?, say?, create?, base?}
@@ -34,7 +35,9 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -364,6 +367,59 @@ IDLE = """<!doctype html><html><head><meta charset="utf-8"><title>Screen {screen
 <p class="pp-muted">No app here yet. Ask Claude for one, e.g. &ldquo;a recipe app for the kitchen&rdquo;.</p></main></body></html>"""
 
 
+def icon_data_uri(repo, app_id, m):
+    """The app's icon as a data: URI (manifest "icon"), else a generated letter tile, so the catalog always has one."""
+    import base64
+    name = m.get('icon')
+    if isinstance(name, str) and not manifest.check_path(name):
+        try:
+            with open(os.path.join(repo.apps, app_id, name), 'rb') as f:
+                b = f.read()
+            kind = 'image/svg+xml' if name.lower().endswith('.svg') else 'image/png'
+            return f'data:{kind};base64,' + base64.b64encode(b).decode()
+        except OSError:
+            pass
+    letter = (m.get('name') or app_id)[:1].upper()
+    hue = int(hashlib.sha1(app_id.encode()).hexdigest()[:2], 16) * 360 // 256
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" '
+           f'fill="hsl({hue},45%,32%)"/><text x="32" y="44" font-family="Helvetica,Arial" font-size="34" font-weight="700" '
+           f'text-anchor="middle" fill="#fff">{letter}</text></svg>')
+    return 'data:image/svg+xml;base64,' + base64.b64encode(svg.encode()).decode()
+
+
+def icon_png(st, app_id, size):
+    """The icon as a PNG for clients that can't draw SVG (the headset), rendered once per app commit by headless Chrome
+    on this machine and cached in <data>/icons."""
+    import base64
+    size = max(32, min(512, size))
+    m = st.repo.manifest(app_id) or {}
+    uri = icon_data_uri(st.repo, app_id, m)
+    if uri.startswith('data:image/png'):
+        return base64.b64decode(uri.split(',', 1)[1])
+    d = os.path.join(st.data, 'icons'); os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, f'{app_id}-{(st.repo.head(app_id) or "x")[:12]}-{size}.png')
+    if not os.path.exists(path):
+        import render_check as rc
+        if not os.path.exists(rc.CHROME):
+            return None
+        html = os.path.join(d, f'{app_id}.html')
+        with open(html, 'w') as f:
+            f.write(f'<html><body style="margin:0;background:transparent"><img src="{uri}" width="{size}" height="{size}"></body></html>')
+        prof = tempfile.mkdtemp(prefix='pp-icon-')
+        try:
+            subprocess.run([rc.CHROME, '--headless=new', '--hide-scrollbars', '--default-background-color=00000000',
+                            f'--window-size={size},{size}', f'--user-data-dir={prof}', '--no-first-run', '--use-mock-keychain',
+                            f'--screenshot={path}.tmp.png', 'file://' + html], capture_output=True, timeout=40)
+            os.replace(path + '.tmp.png', path)
+        except Exception as e:
+            log(f'icon {app_id}: {e}')
+            return None
+        finally:
+            shutil.rmtree(prof, ignore_errors=True)
+    with open(path, 'rb') as f:
+        return f.read()
+
+
 def render_check(port, app_id, say):
     """tools/render_check.py on this machine (needs Chrome): JS errors and the visible text of the app's preview."""
     tool = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools', 'render_check.py')
@@ -476,7 +532,8 @@ class Handler(BaseHTTPRequestHandler):
                 for i in st.repo.ids():
                     m = st.repo.manifest(i) or {}
                     out.append({'id': i, 'name': m.get('name'), 'description': m.get('description'), 'size': m.get('size'),
-                                'permissions': m.get('permissions'), 'screens': st.screens_showing(i)})
+                                'permissions': m.get('permissions'), 'screens': st.screens_showing(i),
+                                'icon': icon_data_uri(st.repo, i, m), 'icon_png': f'/api/apps/{i}/icon.png'})
                 return self.send(200, out)
             if parts[:2] == ['api', 'apps'] and len(parts) >= 3 and manifest.check_id(parts[2]):
                 a = parts[2]
@@ -489,6 +546,9 @@ class Handler(BaseHTTPRequestHandler):
                                            'commit': st.repo.head(a), 'screens': st.screens_showing(a)})
                 if parts[3:] == ['history']:
                     return self.send(200, st.repo.history(a))
+                if parts[3:] == ['icon.png']:
+                    png = icon_png(st, a, int(q.get('size', 256)))
+                    return self.send(200, body=png, ctype='image/png') if png else self.send(404, {'error': 'no icon'})
                 if parts[3:] == ['data']:
                     return self.file(os.path.join(st.data, 'store', a + '.json')) if os.path.isfile(
                         os.path.join(st.data, 'store', a + '.json')) else self.send(200, {})

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Clock</title>
+<style>
+  body { justify-content: center; text-align: center; }
+  #time { font-size: 8.5rem; font-weight: 800; line-height: 1; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
+  #sec { font-size: 3rem; color: var(--pp-muted); letter-spacing: 0; }
+  #date { font-size: 1.5rem; }
+  #sun { font-size: 1.1rem; color: var(--pp-accent); min-height: 1.4rem; }
+  #place { font-size: 0.8rem; color: var(--pp-muted); }
+</style>
+</head>
+<body>
+<div id="place"></div>
+<div id="time">--:--</div>
+<div id="date"></div>
+<div id="sun"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+let cfg, sun = null;  // sun: {tz, events: [{at: ms, kind}]}
+
+function fmt(d, o) { return d.toLocaleString('en-GB', Object.assign({ timeZone: sun && sun.tz || undefined }, o)); }
+function dur(ms) {
+  const m = Math.round(ms / 60000), h = Math.floor(m / 60);
+  return h ? `${h} h ${m % 60} min` : `${m} min`;
+}
+
+function tick() {
+  const now = new Date();
+  $('time').innerHTML = fmt(now, { hour: '2-digit', minute: '2-digit', hour12: false }) +
+    (cfg.seconds ? `<span id="sec">:${fmt(now, { second: '2-digit' }).padStart(2, '0')}</span>` : '');
+  $('date').textContent = fmt(now, { weekday: 'long', day: 'numeric', month: 'long' });
+  $('place').textContent = cfg.place;
+  if (sun) {
+    const next = sun.events.find((e) => e.at > now.getTime());
+    $('sun').textContent = next ? `${next.kind === 'rise' ? '☀️ Sunrise' : '🌙 Sunset'} ${fmt(new Date(next.at), { hour: '2-digit', minute: '2-digit', hour12: false })} · in ${dur(next.at - now)}` : '';
+  }
+}
+
+async function loadSun() {
+  try {
+    const w = await pinpin.fetchJSON(`https://api.open-meteo.com/v1/forecast?latitude=${cfg.lat}&longitude=${cfg.lon}&daily=sunrise,sunset&timezone=auto&forecast_days=3&timeformat=unixtime`);
+    const ev = [];
+    w.daily.sunrise.forEach((t) => ev.push({ at: t * 1000, kind: 'rise' }));
+    w.daily.sunset.forEach((t) => ev.push({ at: t * 1000, kind: 'set' }));
+    sun = { tz: w.timezone, events: ev.sort((a, b) => a.at - b.at) };
+    pinpin.store.set('sun', Object.assign({ place: cfg.place }, sun));
+  } catch (e) {
+    const s = pinpin.store.get('sun');
+    if (s && s.place === cfg.place) sun = s;
+  }
+  tick();
+}
+
+async function setPlace(name) {
+  try {
+    const g = await pinpin.fetchJSON('https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&name=' + encodeURIComponent(name));
+    const r = g.results && g.results[0];
+    if (!r) return pinpin.toast('No place called “' + name + '”');
+    cfg = Object.assign({}, cfg, { place: r.name, lat: r.latitude, lon: r.longitude });
+    pinpin.store.set('config', Object.assign(pinpin.store.get('config', {}), { place: r.name, lat: r.latitude, lon: r.longitude }));
+    sun = null; loadSun();
+  } catch (e) { pinpin.toast('Could not look that up'); }
+}
+
+pinpin.onVoice((text) => {
+  const t = text.trim().replace(/[.!?]+$/, '');
+  let m;
+  if (/\b(show|with) seconds\b|^seconds( on)?$/i.test(t)) { cfg.seconds = true; pinpin.store.set('config', Object.assign(pinpin.store.get('config', {}), { seconds: true })); return tick(); }
+  if (/\b(hide|no|without) seconds\b|^seconds off$/i.test(t)) { cfg.seconds = false; pinpin.store.set('config', Object.assign(pinpin.store.get('config', {}), { seconds: false })); return tick(); }
+  if ((m = t.match(/(?:clock|time)?\s*(?:in|for|at)\s+(.+)$/i))) return setPlace(m[1]);
+  pinpin.toast('Say “clock for Paris” or “show seconds”');
+});
+
+pinpin.ready.then(() => {
+  cfg = pinpin.config;
+  const s = pinpin.store.get('sun');
+  if (s && s.place === cfg.place) sun = s;
+  tick(); setInterval(tick, 1000);
+  loadSun(); setInterval(loadSun, 6 * 3600 * 1000);
+});
+</script>
+</body>
+</html>

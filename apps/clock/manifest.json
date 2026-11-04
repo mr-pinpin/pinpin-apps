@@ -1,0 +1,10 @@
+{
+ "id": "clock",
+ "name": "Clock",
+ "description": "The time, today's date and the next sunrise or sunset (open-meteo). Say \"clock for <city>\" to change the place.",
+ "icon": "icon.svg",
+ "version": 1,
+ "size": {"aspect": "16:10", "min_px": [640, 400], "preferred_px": [1920, 1200], "distance_m": 3},
+ "permissions": {"fetch": ["api.open-meteo.com", "geocoding-api.open-meteo.com"], "voice": true, "storage": true},
+ "config": {"place": "Moscow", "lat": 55.7558, "lon": 37.6173, "seconds": false}
+}

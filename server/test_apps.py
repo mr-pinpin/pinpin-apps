@@ -194,27 +194,27 @@ class Apps(unittest.TestCase):
 
     def test_create_update_commit_and_reload(self):
         n = self.commits()
-        st, d, _ = self.req('PUT', '/api/apps/clock', {'files': self.app('clock'), 'message': 'a clock', 'by': 'test'})
+        st, d, _ = self.req('PUT', '/api/apps/tclock', {'files': self.app('tclock'), 'message': 'a clock', 'by': 'test'})
         self.assertEqual(st, 200, d); self.assertTrue(d['changed'])
         self.assertEqual(self.commits(), n + 1)
         subj = subprocess.run(['git', '-C', self.repo, 'log', '-1', '--format=%s %an'], capture_output=True, text=True).stdout
-        self.assertIn('clock: a clock (by test) Mr. PinPin', subj)
+        self.assertIn('tclock: a clock (by test) Mr. PinPin', subj)
         # same content again: no commit
-        st, d, _ = self.req('PUT', '/api/apps/clock', {'files': self.app('clock')})
+        st, d, _ = self.req('PUT', '/api/apps/tclock', {'files': self.app('tclock')})
         self.assertFalse(d['changed']); self.assertEqual(self.commits(), n + 1)
         # an update reloads previews and screens showing it
-        got, close = self.events('preview:clock')
-        st, d, _ = self.req('PUT', '/api/apps/clock', {'files': {'style.css': 'body{color:red}'}, 'message': 'red'})
+        got, close = self.events('preview:tclock')
+        st, d, _ = self.req('PUT', '/api/apps/tclock', {'files': {'style.css': 'body{color:red}'}, 'message': 'red'})
         self.assertEqual(st, 200, d)
         self.assertTrue(self.wait(lambda: ('reload', {'why': 'updated'}) in got))
         close()
-        st, d, _ = self.req('GET', '/api/apps/clock')
+        st, d, _ = self.req('GET', '/api/apps/tclock')
         self.assertEqual(set(d['files']), {'index.html', 'manifest.json', 'style.css'})
         # delete one file, then replace the whole folder
-        self.req('PUT', '/api/apps/clock', {'files': {'style.css': None}})
-        self.assertNotIn('style.css', self.req('GET', '/api/apps/clock')[1]['files'])
-        self.req('PUT', '/api/apps/clock', {'files': self.app('clock', {'a.js': '1'}), 'replace': True})
-        self.assertEqual(set(self.req('GET', '/api/apps/clock')[1]['files']), {'index.html', 'manifest.json', 'a.js'})
+        self.req('PUT', '/api/apps/tclock', {'files': {'style.css': None}})
+        self.assertNotIn('style.css', self.req('GET', '/api/apps/tclock')[1]['files'])
+        self.req('PUT', '/api/apps/tclock', {'files': self.app('tclock', {'a.js': '1'}), 'replace': True})
+        self.assertEqual(set(self.req('GET', '/api/apps/tclock')[1]['files']), {'index.html', 'manifest.json', 'a.js'})
 
     def test_invalid_apps_rejected_and_nothing_written(self):
         n = self.commits()
@@ -409,6 +409,21 @@ class Apps(unittest.TestCase):
         st, d, _ = self.req('PUT', '/api/apps/guarded', {'files': {'a.js': '2'}, 'base': head})  # stale base
         self.assertEqual(st, 409)
         self.assertEqual(self.req('GET', '/api/apps/guarded')[1]['files']['a.js'], '1')
+
+    def test_catalog_icons(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="8" height="8" fill="#f00"/></svg>'
+        m = {'id': 'iconic', 'name': 'Iconic', 'description': 'd', 'icon': 'icon.svg'}
+        st, d, _ = self.req('PUT', '/api/apps/iconic', {'files': {'index.html': 'x', 'manifest.json': json.dumps(m), 'icon.svg': svg}})
+        self.assertEqual(st, 200, d)
+        cat = {a['id']: a for a in self.req('GET', '/api/apps')[1]}
+        self.assertTrue(cat['iconic']['icon'].startswith('data:image/svg+xml;base64,'))
+        self.assertEqual(cat['iconic']['icon_png'], '/api/apps/iconic/icon.png')
+        self.assertTrue(cat['clock' if 'clock' in cat else 'weather']['icon'].startswith('data:image/'))  # every app has one
+        m['icon'] = 'missing.svg'
+        self.assertEqual(self.req('PUT', '/api/apps/iconic', {'files': {'manifest.json': json.dumps(m)}})[0], 400)
+        for a in cat:
+            if a in ('weather', 'recipes', 'timer', 'shopping', 'clock', 'notes'):
+                self.assertIn('icon.svg', os.listdir(os.path.join(ROOT, 'apps', a)), f'{a}: starter apps ship an icon')
 
     def test_authoring_guide(self):
         st, text, r = self.req('GET', '/api/authoring')

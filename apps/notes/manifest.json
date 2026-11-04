@@ -1,0 +1,10 @@
+{
+ "id": "notes",
+ "name": "Notes board",
+ "description": "Dictated sticky notes. Say \"note: call the plumber\", \"delete note 2\" or \"clear the board\".",
+ "icon": "icon.svg",
+ "version": 1,
+ "size": {"aspect": "16:10", "min_px": [800, 500], "preferred_px": [1920, 1200], "distance_m": 2},
+ "permissions": {"fetch": [], "voice": true, "storage": true},
+ "config": {"max_notes": 9}
+}

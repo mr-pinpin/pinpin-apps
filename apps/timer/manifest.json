@@ -2,6 +2,7 @@
  "id": "timer",
  "name": "Kitchen timer",
  "description": "A big countdown. Say \"5 minutes\" or \"stop\".",
+ "icon": "icon.svg",
  "size": {
   "aspect": "16:10",
   "preferred_px": [
