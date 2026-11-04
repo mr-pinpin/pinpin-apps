@@ -43,6 +43,8 @@ wait_href iana || exit 1
 echo "PASS click navigates"
 ev=$(post eval '{"js": "location.href + \" | \" + document.title"}'); echo "eval: $ev"
 case "$ev" in *iana.org*) echo "PASS eval";; *) echo "eval failed"; exit 1;; esac
+sh=$($M "curl -s -m20 -D - -o /tmp/pp-shot.png -H \"Authorization: Bearer \$(cat ~/pinpin-apps-data/token)\" '127.0.0.1:57830/api/screens/$ID/shot?max=800' | tr -d '\r' | grep -i '^x-viewport'; file -b /tmp/pp-shot.png | cut -c1-40")
+echo "shot: $sh"; case "$sh" in *PNG*) echo "PASS shot";; *) echo "shot failed"; exit 1;; esac
 # scroll (display u/v = centre)
 open_url https://en.wikipedia.org/wiki/Moscow wikipedia || exit 1
 sleep 2; post scroll '{"u": 5000, "v": 5000, "dy": 900}' >/dev/null; sleep 1
