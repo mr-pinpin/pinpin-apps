@@ -98,7 +98,7 @@ function render() {
     $('hint').innerHTML = S.recipes.length ? 'Say <b>recipe 2</b> · <b>more</b> · <b>remove eggs</b> · <b>clear</b>' : 'Say your ingredients';
   }
   $('src').textContent = S.source;
-  $('busy').textContent = asking ? 'thinking…' : '';
+  $('busy').textContent = asking ? 'asking Claude…' : '';
 }
 
 function fromCatalogue(have, exclude, n) {
@@ -113,7 +113,10 @@ function fromCatalogue(have, exclude, n) {
 async function suggest(more) {
   if (!S.have.length) { S.recipes = []; render(); return; }
   const n = pinpin.config.suggestions || 3, exclude = more ? S.recipes.map((r) => r.title) : [];
-  const ticket = ++asking; render();
+  const ticket = ++asking;
+  const quick = fromCatalogue(S.have, exclude, n);  // instant ideas while Claude thinks (it takes 10-30 s)
+  if (quick.length && S.view === 'list') { S.recipes = quick; S.source = 'ideas: built-in list'; S.pick = 0; S.step = 0; }
+  render();
   let out = null, source = '';
   const r = await pinpin.ask(
     `Ingredients I have: ${S.have.join(', ')}.` + (exclude.length ? ` Not these again: ${exclude.join('; ')}.` : '') +
@@ -128,10 +131,12 @@ async function suggest(more) {
       .map((x) => ({ title: String(x.title), minutes: +x.minutes || 0, uses: (x.uses || []).map(String), missing: (x.missing || []).map(String), steps: x.steps.map(String) }));
     source = 'ideas: Claude';
   }
-  if (!out || !out.length) { out = fromCatalogue(S.have, exclude, n); source = 'ideas: built-in list' + (r.stub ? '' : ' (Claude did not answer)'); }
+  if (!out || !out.length) { out = quick; source = 'ideas: built-in list' + (r.stub ? '' : ' (Claude did not answer)'); }
   asking = 0;
   if (more && !out.length) { pinpin.toast('No more ideas with these'); render(); return; }
-  S.recipes = out; S.source = source; S.view = 'list'; S.pick = 0; S.step = 0; save(); render();
+  if (S.view === 'recipe') { render(); return; }  // already cooking from a quick idea: don't pull the page away
+  S.recipes = out; S.source = source; S.pick = 0; S.step = 0; save(); render();
+  if (source === 'ideas: Claude') pinpin.toast('Claude has ideas', 1500);
 }
 function suggestSoon() { clearTimeout(askTimer); askTimer = setTimeout(() => suggest(false), 1200); }
 
