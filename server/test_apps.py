@@ -624,6 +624,44 @@ class Apps(unittest.TestCase):
         finally:
             os.remove(tp); os.remove(ap)
 
+    def test_store_writes_are_crash_safe(self):
+        st = self.st
+        path = os.path.join(st.data, 'store', 'notes.json')
+        st.write_store('notes', b'{"notes": ["v1"]}')
+        st.write_store('notes', b'{"notes": ["v2"]}')
+        self.assertEqual(open(path, 'rb').read(), b'{"notes": ["v2"]}')
+        self.assertEqual(open(path + '.1', 'rb').read(), b'{"notes": ["v1"]}')  # the previous version is kept
+        # a crash in the middle of writing the new file: the old one stays whole, no temp file is left behind
+        real_fsync = os.fsync
+        def boom(fd): raise OSError('power cut')
+        os.fsync = boom
+        try:
+            self.assertRaises(OSError, st.write_store, 'notes', b'{"notes": ["v3-never-landed"]}')
+        finally:
+            os.fsync = real_fsync
+        self.assertEqual(open(path, 'rb').read(), b'{"notes": ["v2"]}')
+        self.assertEqual([f for f in os.listdir(os.path.dirname(path)) if '.tmp' in f], [])
+        # a crash at the rename: same
+        real_replace = os.replace
+        def boom2(a, b): raise OSError('power cut at rename')
+        os.replace = boom2
+        try:
+            self.assertRaises(OSError, apps_server.atomic_write, path, b'{"torn": ')
+        finally:
+            os.replace = real_replace
+        self.assertEqual(json.loads(open(path).read()), {'notes': ['v2']})
+        # a corrupted current file (disk trouble): the previous good version is served, never the garbage, never {}
+        with open(path, 'wb') as f:
+            f.write(b'{"notes": ["v2", ')
+        st_, body, r = self.req('GET', '/api/apps/notes/data')
+        self.assertEqual((st_, body, r.getheader('X-Store-Recovered')), (200, {'notes': ['v1']}, '1'))
+        # and a write after that keeps the bad file out of the fallback slot
+        st.write_store('notes', b'{"notes": ["v4"]}')
+        self.assertEqual(json.loads(open(path + '.1').read()), {'notes': ['v1']})
+        self.assertEqual(self.req('GET', '/api/apps/notes/data')[1], {'notes': ['v4']})
+        os.remove(path); os.remove(path + '.1')
+        self.assertEqual(self.req('GET', '/api/apps/notes/data')[1], {})
+
     def test_authoring_guide(self):
         st, text, r = self.req('GET', '/api/authoring')
         self.assertEqual(st, 200); self.assertIn('PUT http://', text)

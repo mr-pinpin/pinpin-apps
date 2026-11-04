@@ -82,6 +82,29 @@ PROXY_TTL = 60
 AUTHOR = ['-c', 'user.name=Mr. PinPin', '-c', 'user.email=miguelemosreverte@gmail.com']
 
 
+def atomic_write(path, data):
+    """Crash-safe replace: a temp file in the same directory, fsync, rename, fsync the directory. A crash at any point
+    leaves either the old file or the new one, never a torn mix (the user's rule: what they set is never corrupted)."""
+    if isinstance(data, str):
+        data = data.encode()
+    d = os.path.dirname(path) or '.'
+    tmp = f'{path}.tmp-{os.getpid()}-{threading.get_ident()}'
+    try:
+        with open(tmp, 'wb') as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    fd = os.open(d, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def now():
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
@@ -202,10 +225,7 @@ class House:
             doc = json.loads(r.read())
         if doc != self.doc:
             self.doc = doc
-            tmp = self.cache_path + '.tmp'
-            with open(tmp, 'w') as f:
-                json.dump(doc, f)
-            os.replace(tmp, self.cache_path)
+            atomic_write(self.cache_path, json.dumps(doc))
         return doc
 
     def mapping(self, doc=None):
@@ -401,6 +421,39 @@ class State:
         except (OSError, ValueError):
             self.private_ok = set()
 
+    # ---- app stores (pinpin.store): <data>/store/<app>.json, its previous version kept as <app>.json.1
+    def write_store(self, app_id, raw):
+        path = os.path.join(self.data, 'store', app_id + '.json')
+        with self.opens_lock:
+            if os.path.exists(path):
+                try:
+                    with open(path, 'rb') as f:
+                        cur = f.read()
+                    json.loads(cur)  # only a good version becomes the fallback
+                    if cur != raw:
+                        atomic_write(path + '.1', cur)
+                except (OSError, ValueError):
+                    pass
+            atomic_write(path, raw)
+
+    def read_store(self, app_id):
+        """(body, recovered): the store, or its previous version if the current one is unreadable, or {} if neither."""
+        path = os.path.join(self.data, 'store', app_id + '.json')
+        for i, p in enumerate((path, path + '.1')):
+            try:
+                with open(p, 'rb') as f:
+                    b = f.read()
+                json.loads(b)
+                if i:
+                    log(f'store {app_id}: current file unreadable, served the previous version')
+                return b, bool(i)
+            except FileNotFoundError:
+                if i == 0 and not os.path.exists(path + '.1'):
+                    return b'{}', False
+            except (OSError, ValueError):
+                continue
+        return b'{}', True
+
     def public_host(self, hostname):
         """True when every address the name resolves to is on the internet (not loopback, the LAN or link-local), or
         the host is explicitly allowed in <data>/proxy-private.json (["host", ...]; the tests use it)."""
@@ -419,10 +472,7 @@ class State:
                 self.opens[screen] = {'url': url, 'seq': seq}
             elif self.opens.pop(screen, None) is None:
                 return None
-            tmp = self.opens_path + '.tmp'
-            with open(tmp, 'w') as f:
-                json.dump(self.opens, f)
-            os.replace(tmp, self.opens_path)
+            atomic_write(self.opens_path, json.dumps(self.opens))
             return seq
 
     @property
@@ -460,10 +510,7 @@ class State:
             return []
 
     def inbox_write(self, app_id, msgs):
-        p = self.inbox_path(app_id)
-        with open(p + '.tmp', 'w') as f:
-            json.dump(msgs, f)
-        os.replace(p + '.tmp', p)
+        atomic_write(self.inbox_path(app_id), json.dumps(msgs))
 
     def post_message(self, sender, target, kind, data, dry=False):
         """'' when queued, else why not."""
@@ -876,8 +923,8 @@ class Handler(BaseHTTPRequestHandler):
                 if parts[3:] == ['data']:
                     if not self.from_host():
                         return
-                    return self.file(os.path.join(st.data, 'store', a + '.json')) if os.path.isfile(
-                        os.path.join(st.data, 'store', a + '.json')) else self.send(200, {})
+                    body, recovered = st.read_store(a)
+                    return self.send(200, body=body, headers={'X-Store-Recovered': '1'} if recovered else None)
             if parts == ['api', 'screens']:
                 rp = self.headers.get('X-PinPin-Runner', '')
                 if rp.isdigit():  # the laptop runner polls with its input port: that's where input goes
@@ -1024,10 +1071,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, {'error': 'not JSON'})
             if a not in st.repo.ids():
                 return self.send(404, {'error': f'no app {a}'})
-            path = os.path.join(st.data, 'store', a + '.json')
-            with open(path + '.tmp', 'wb') as f:
-                f.write(raw)
-            os.replace(path + '.tmp', path)
+            st.write_store(a, raw)
             return self.send(200, {'ok': True})
         if parts[3:]:
             return self.send(404, {'error': 'not found'})
@@ -1117,9 +1161,7 @@ class Handler(BaseHTTPRequestHandler):
             rec = {'component': name, 'text': d['text'][:300], 'ok': d.get('ok') if isinstance(d.get('ok'), bool) else None,
                    'link': d['link'][:300] if isinstance(d.get('link'), str) else None, 'at': now()}
             cd = os.path.join(st.data, 'status', 'components'); os.makedirs(cd, exist_ok=True)
-            with open(os.path.join(cd, name + '.json.tmp'), 'w') as f:
-                json.dump(rec, f)
-            os.replace(os.path.join(cd, name + '.json.tmp'), os.path.join(cd, name + '.json'))
+            atomic_write(os.path.join(cd, name + '.json'), json.dumps(rec))
             return self.send(200, rec)
         if parts == ['api', 'build']:  # the control page's "ask Claude to build an app": the assistant runs its app tools
             prompt = d.get('prompt')

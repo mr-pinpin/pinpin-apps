@@ -37,6 +37,7 @@
     else if (m.t === 'voice') voice(m.text, m.info);
     else if (m.t === 'message') { msgFns.length ? message(m.msg) : msgQueue.push(m.msg); }
     else if (m.t === 'net') P.connected = m.connected;
+    else if (m.t === 'data' && m.data && typeof m.data === 'object') data = m.data;  // the saved data arrived late (host retried)
     else if ((m.t === 'fetch' || m.t === 'ask' || m.t === 'send') && pending[m.id]) { pending[m.id](m); delete pending[m.id]; }
     else if (m.t === 'error') console.error('pinpin host: ' + m.error);
   });

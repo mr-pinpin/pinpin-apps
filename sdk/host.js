@@ -17,6 +17,9 @@
   const frame = document.getElementById('app');
   const H = window.pinpinHost = { app, screen, connected: false, voice };
   let manifest = {}, data = {}, saveTimer = null, ready = false, queue = [];
+  // never write before the real data has loaded: a write from a page that started while the Mini was unreachable would
+  // replace the app's saved data with a partial copy. Until then changes are kept here and merged on top.
+  let loaded = false, pendingKeys = new Set();
 
   const HDR = { 'X-PinPin': '1' };  // the server only accepts proxy/data/ask calls that carry it (frames can't)
   function post(msg) { if (frame.contentWindow) frame.contentWindow.postMessage(msg, '*'); }
@@ -24,6 +27,7 @@
 
   function save() {
     if (preview) return;  // previews and render checks never overwrite what the real screens keep
+    if (!loaded) return;  // see above: merged and written once the load succeeds
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       fetch('/api/apps/' + app + '/data', { method: 'PUT', body: JSON.stringify(data), headers: Object.assign({ 'Content-Type': 'application/json' }, HDR) })
@@ -39,7 +43,11 @@
     } else if (m.t === 'store' && m.data && typeof m.data === 'object') {
       const s = JSON.stringify(m.data);
       if (s.length > 200000) return post({ t: 'error', error: 'app data over 200 KB' });
-      data = JSON.parse(s); save();
+      const next = JSON.parse(s);
+      if (!loaded) for (const k of new Set([...Object.keys(data), ...Object.keys(next)])) {
+        if (JSON.stringify(data[k]) !== JSON.stringify(next[k])) pendingKeys.add(k);
+      }
+      data = next; save();
     } else if (m.t === 'fetch') {
       let out;
       try {
@@ -100,7 +108,23 @@
 
   (async () => {
     try { manifest = await (await fetch('/apps/' + app + '/manifest.json', { cache: 'no-store' })).json(); } catch (e) {}
-    try { const r = await fetch('/api/apps/' + app + '/data', { cache: 'no-store', headers: HDR }); if (r.ok) data = await r.json(); } catch (e) {}
+    async function loadData() {
+      try {
+        const r = await fetch('/api/apps/' + app + '/data', { cache: 'no-store', headers: HDR });
+        if (!r.ok) return false;
+        const server = await r.json();
+        if (pendingKeys.size) {  // changes made while offline win over the loaded copy, key by key
+          for (const k of pendingKeys) { if (k in data) server[k] = data[k]; else delete server[k]; }
+          pendingKeys.clear();
+          data = server; loaded = true; save();
+        } else { data = server; loaded = true; }
+        if (ready) { ready = false; frame.src = frame.src; }  // the app started without its data: restart it with the real copy
+        return true;
+      } catch (e) { return false; }
+    }
+    if (!(await loadData())) {  // the Mini is unreachable: retry, and don't write until it answers
+      const retry = setInterval(async () => { if (await loadData()) clearInterval(retry); }, 5000);
+    }
     dotEl = document.createElement('div'); dotEl.className = 'host-dot'; document.body.appendChild(dotEl); dot();
     connect();
     // the frame starts loading only now, so its hello always finds manifest and data here
