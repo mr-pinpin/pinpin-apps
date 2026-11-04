@@ -34,7 +34,8 @@
   POST /api/screens/<id>/shown      {seq} (the runner)
   POST /api/screens/<id>/click|move|scroll|type|key   input into that screen's runner window over CDP (forwarded to
                                     the laptop runner): {u, v (0..10000 of the display, or space:"viewport"), button,
-                                    count|double} | {u, v} | {u, v, dx, dy} | {text} | {key|combo: "Cmd+L"}
+                                    count|double} | {u, v} | {u, v, dx, dy} | {text} | {key|combo: "Cmd+L"};
+                                    POST .../eval {js} -> {ok, value}: an expression in the page (DOM checks, live URL)
   POST /api/build                   {prompt, app?, screen?} -> the assistant builds/changes an app with its tools (control page)
   POST /api/ask                     {app, screen, prompt, system?, json?, model?} -> {text, json?} (assistant, or the stub)
   GET  /proxy?app=<app>&url=<url>   GET through the Mini, only to hosts in the app's permissions.fetch
@@ -1095,7 +1096,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(400, {'error': 'url: an http(s) URL, or null to return to the app'})
                 seq = st.set_open(sid, url)
                 return self.send(200, {'screen': sid, 'url': url, 'seq': seq or 0})
-            if what in ('click', 'move', 'scroll', 'type', 'key'):
+            if what in ('click', 'move', 'scroll', 'type', 'key', 'eval'):
                 if not st.runner_url:
                     return self.send(502, {'error': 'the laptop runner has not checked in'})
                 req = urllib.request.Request(f'{st.runner_url}/input/{sid}/{what}', data=json.dumps(d).encode(), method='POST',

@@ -513,7 +513,7 @@ class Apps(unittest.TestCase):
             st, d, _ = self.req('POST', '/api/screens/47/click', {'u': 5000, 'v': 8450, 'count': 2})
             self.assertEqual((st, d), (200, {'ok': True, 'x': 1, 'y': 2}))
             self.assertEqual(R.seen[-1], ('/input/47/click', {'u': 5000, 'v': 8450, 'count': 2}))
-            for kind in ('move', 'scroll', 'type', 'key'):
+            for kind in ('move', 'scroll', 'type', 'key', 'eval'):
                 self.assertEqual(self.req('POST', f'/api/screens/47/{kind}', {'u': 1})[0], 200, kind)
             self.assertEqual(self.req('POST', '/api/screens/9/click', {'u': 1, 'v': 1})[0], 404)  # no window there
             self.assertEqual(self.req('POST', '/api/screens/47/click', {'u': 1}, headers={'Origin': 'null', 'Content-Type': 'application/json'})[0], 403)

@@ -86,6 +86,7 @@ function render() {
   $('have').innerHTML = S.have.length ? S.have.map((h) => `<span class="pp-chip pp-on">${E(h)}</span>`).join('')
     : '<span class="pp-muted">Tell me what you have: “eggs, tomatoes and an onion”</span>';
   const list = $('list'), rec = $('recipe');
+  $('have').style.display = S.view === 'recipe' ? 'none' : '';  // cooking: the step gets the room
   if (S.view === 'recipe' && S.recipes[S.pick]) {
     list.style.display = 'none'; rec.classList.add('on');
     const r = S.recipes[S.pick], n = r.steps.length;

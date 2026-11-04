@@ -297,6 +297,18 @@ class Input:
             for ev in key_events(d.get('combo') or d.get('key') or ''):
                 self.call(s, 'Input.dispatchKeyEvent', ev)
             return {'ok': True}
+        if kind == 'eval':  # read the page (DOM checks, the live URL); the result must be JSON-serialisable
+            js = d.get('js')
+            if not isinstance(js, str) or not js.strip() or len(js) > 20000:
+                raise ValueError('js: an expression, at most 20000 characters')
+            r = self.call(s, 'Runtime.evaluate', {'expression': js, 'returnByValue': True, 'awaitPromise': True, 'timeout': 5000})
+            if r.get('exceptionDetails'):
+                ex = r['exceptionDetails']
+                return {'ok': False, 'error': ((ex.get('exception') or {}).get('description') or ex.get('text') or 'exception')[:500]}
+            v = (r.get('result') or {}).get('value')
+            if len(json.dumps(v, default=str)) > 65536:
+                raise ValueError('result over 64 KB: return less')
+            return {'ok': True, 'value': v}
         raise ValueError(f'unknown input {kind}')
 
 
