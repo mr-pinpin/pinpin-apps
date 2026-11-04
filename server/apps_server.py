@@ -1,0 +1,678 @@
+#!/usr/bin/env python3
+"""pinpin-apps server (Mini, port 57830): serves the mini-apps to the wall screens and lets the assistant evolve them.
+
+  GET  /screen/<id>                 the app house.json maps to screen <id>, SDK injected (the runner's window URL)
+  GET  /app/<app>/                  preview of an app with the SDK, screen "preview"
+  GET  /apps/<app>/<path>           raw app files;  GET /sdk/<file>  the SDK
+  GET  /events?screen=<id>          server-sent events to the page: reload, voice {text}
+  GET  /api/apps                    [{id, name, description, size, permissions, commit}]
+  GET  /api/apps/<app>              {manifest, files: {path: text}, commit}
+  PUT  /api/apps/<app>              {files: {path: text|null}, message, replace?, by?} -> one git commit, screens reload
+  DELETE /api/apps/<app>            removes the folder (one commit) and unassigns its screens
+  GET  /api/apps/<app>/history      [{commit, when, subject}]
+  POST /api/apps/<app>/rollback     {commit} -> folder as at that commit, as a new commit
+  GET|PUT /api/apps/<app>/data      the app's stored JSON (SDK pinpin.store), outside git
+  GET  /api/screens                 [{screen, app, display, clients, w, h}] from house.json
+  POST /api/screens/<id>/app        {app: id|null} -> house.json "apps" section, that screen reloads
+  POST /api/screens/<id>/say        {text} -> the page's pinpin.onVoice handlers
+  POST /api/screens/<id>/reload
+  POST /api/ask                     {app, screen, prompt, system?, json?} -> {text, json?} (assistant, or the stub)
+  GET  /proxy?app=<app>&url=<url>   GET through the Mini, only to hosts in the app's permissions.fetch
+
+Stdlib only. The repo (--repo) is a git checkout of mr-pinpin/pinpin-apps; app data and secrets live in --data.
+"""
+import argparse
+import hashlib
+import json
+import os
+import queue
+import re
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import manifest  # noqa: E402
+
+SHA = re.compile(r'^[0-9a-f]{7,40}$')
+MIME = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+        '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.woff2': 'font/woff2',
+        '.txt': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8'}
+MAX_BODY = 12 << 20
+MAX_STORE = 256 << 10
+MAX_PROXY = 5 << 20
+PROXY_TTL = 60
+AUTHOR = ['-c', 'user.name=Mr. PinPin', '-c', 'user.email=miguelemosreverte@gmail.com']
+
+
+def now():
+    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+
+def log(*a):
+    print(now(), *a, file=sys.stderr, flush=True)
+
+
+# ---- the apps repo: every write is one commit
+
+class Repo:
+    def __init__(self, root, push=False):
+        self.root, self.push, self.lock = root, push, threading.Lock()
+        self.apps = os.path.join(root, 'apps')
+        os.makedirs(self.apps, exist_ok=True)
+        if not os.path.isdir(os.path.join(root, '.git')):
+            self.git('init', '-q', '-b', 'main')
+
+    def git(self, *a, check=True):
+        r = subprocess.run(['git', *AUTHOR, '-C', self.root, *a], capture_output=True, text=True, timeout=60)
+        if check and r.returncode:
+            raise RuntimeError(f'git {a[0]}: {r.stderr.strip()[:300]}')
+        return r.stdout.strip()
+
+    def ids(self):
+        return sorted(d for d in os.listdir(self.apps)
+                      if manifest.check_id(d) and os.path.isfile(os.path.join(self.apps, d, 'manifest.json')))
+
+    def files(self, app_id):
+        base, out = os.path.join(self.apps, app_id), {}
+        for dp, dn, fn in os.walk(base):
+            dn[:] = [d for d in dn if not d.startswith('.')]
+            for f in fn:
+                full = os.path.join(dp, f)
+                rel = os.path.relpath(full, base).replace(os.sep, '/')
+                if not manifest.check_path(rel):
+                    with open(full, 'rb') as fh:
+                        out[rel] = fh.read()
+        return out
+
+    def manifest(self, app_id):
+        try:
+            with open(os.path.join(self.apps, app_id, 'manifest.json')) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return None
+
+    def head(self, app_id=None):
+        return self.git('log', '-1', '--format=%H', *(['--', f'apps/{app_id}'] if app_id else []), check=False)
+
+    def write(self, app_id, files, message, replace=False, by='assistant'):
+        """Returns (problems, commit, changed)."""
+        with self.lock:
+            existing = {} if replace else self.files(app_id)
+            problems, result = manifest.validate_files(app_id, files, existing)
+            if problems:
+                return problems, None, False
+            base = os.path.join(self.apps, app_id)
+            old = self.files(app_id)
+            for p in set(old) - set(result):
+                os.remove(os.path.join(base, p))
+            for p, b in result.items():
+                if old.get(p) == b:
+                    continue
+                full = os.path.join(base, p)
+                os.makedirs(os.path.dirname(full), exist_ok=True)
+                tmp = full + '.tmp'
+                with open(tmp, 'wb') as f:
+                    f.write(b); f.flush(); os.fsync(f.fileno())
+                os.replace(tmp, full)
+            return [], *self._commit(app_id, f'{app_id}: {message or "update"} (by {by})')
+
+    def remove(self, app_id, message, by='assistant'):
+        with self.lock:
+            self.git('rm', '-r', '-q', '--ignore-unmatch', f'apps/{app_id}')
+            subprocess.run(['rm', '-rf', os.path.join(self.apps, app_id)], check=False)
+            return self._commit(app_id, f'{app_id}: removed - {message or "no reason given"} (by {by})')
+
+    def rollback(self, app_id, commit, by='assistant'):
+        with self.lock:
+            full = self.git('rev-parse', '--verify', '-q', f'{commit}^{{commit}}', check=False)
+            if not full or not self.git('ls-tree', '-r', '--name-only', full, f'apps/{app_id}/manifest.json', check=False):
+                return f'{commit}: no {app_id} at that commit', None, False
+            self.git('rm', '-r', '-q', '--ignore-unmatch', f'apps/{app_id}')
+            self.git('checkout', full, '--', f'apps/{app_id}')
+            return '', *self._commit(app_id, f'{app_id}: rollback to {full[:10]} (by {by})')
+
+    def _commit(self, app_id, msg):
+        if os.path.isdir(os.path.join(self.apps, app_id)):  # after a removal, git rm already staged it
+            self.git('add', '-A', f'apps/{app_id}')
+        if not self.git('status', '--porcelain', '--', f'apps/{app_id}'):
+            return self.head(app_id), False
+        self.git('commit', '-q', '-m', msg)
+        c = self.head()
+        if self.push:
+            threading.Thread(target=self.git, args=('push', '-q', 'origin', 'HEAD:main'), kwargs={'check': False}, daemon=True).start()
+        return c, True
+
+    def history(self, app_id, limit=50):
+        out = self.git('log', f'-{limit}', '--format=%H%x09%cI%x09%s', '--', f'apps/{app_id}', check=False)
+        return [dict(zip(('commit', 'when', 'subject'), l.split('\t', 2))) for l in out.splitlines() if l]
+
+
+# ---- house.json: the "apps" section maps screen id -> app id (house/README.md in quest-wall-screen)
+
+class House:
+    def __init__(self, url, cache_path, by='apps'):
+        self.url, self.cache_path, self.by = url.rstrip('/'), cache_path, by
+        self.doc = None
+        try:
+            with open(cache_path) as f:
+                self.doc = json.load(f)
+        except (OSError, ValueError):
+            pass
+
+    def fetch(self):
+        with urllib.request.urlopen(self.url + '/house', timeout=5) as r:
+            doc = json.loads(r.read())
+        if doc != self.doc:
+            self.doc = doc
+            tmp = self.cache_path + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(doc, f)
+            os.replace(tmp, self.cache_path)
+        return doc
+
+    def mapping(self, doc=None):
+        doc = doc if doc is not None else self.doc
+        return {a['screen']: a['app'] for a in (doc or {}).get('apps', [])
+                if isinstance(a, dict) and isinstance(a.get('screen'), int) and isinstance(a.get('app'), str)}
+
+    def screens(self):
+        return [s for s in (self.doc or {}).get('screens', []) if isinstance(s, dict)]
+
+    def assign(self, screen, app_id, tries=5):
+        """Sets (app_id) or clears (None) the screen's app. Read-modify-write with If-Match; retries on 409."""
+        for _ in range(tries):
+            doc = self.fetch()
+            apps = [a for a in doc.get('apps', []) if not (isinstance(a, dict) and a.get('screen') == screen)]
+            if app_id:
+                apps.append({'screen': screen, 'app': app_id})
+            apps.sort(key=lambda a: a.get('screen', 0))
+            if apps == doc.get('apps', []) or (not apps and 'apps' not in doc):
+                return doc['rev']
+            new = dict(doc, apps=apps, by=self.by)
+            body = json.dumps(new, indent=1).encode()
+            req = urllib.request.Request(self.url + '/house', data=body, method='PUT', headers={
+                'If-Match': str(doc['rev']), 'X-House-SHA256': hashlib.sha256(body).hexdigest(),
+                'Content-Type': 'application/json', 'X-House-Note': f'screen {screen} app {app_id or "none"}'})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    rev = json.loads(r.read())['rev']
+                self.fetch()
+                return rev
+            except urllib.error.HTTPError as e:
+                if e.code != 409:
+                    raise RuntimeError(f'house refused: {e.code} {e.read()[:400].decode(errors="replace")}')
+        raise RuntimeError('house: still conflicting after retries')
+
+
+# ---- the assistant behind /api/ask: work-42's service when configured, a stub otherwise
+
+class StubAssistant:
+    name = 'stub'
+
+    def ask(self, req):
+        return {'text': '', 'stub': True, 'note': 'no assistant configured; the app should use its own fallback'}
+
+
+class HttpAssistant:
+    def __init__(self, url):
+        self.url, self.name = url, url
+
+    def ask(self, req):
+        body = json.dumps(req).encode()
+        r = urllib.request.Request(self.url, data=body, method='POST', headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(r, timeout=90) as resp:
+            return json.loads(resp.read())
+
+
+def make_assistant(url):
+    return HttpAssistant(url) if url else StubAssistant()
+
+
+# ---- events to the pages
+
+class Hub:
+    def __init__(self):
+        self.lock, self.subs = threading.Lock(), {}
+
+    def subscribe(self, screen):
+        q = queue.Queue(64)
+        with self.lock:
+            self.subs.setdefault(screen, []).append(q)
+        return q
+
+    def unsubscribe(self, screen, q):
+        with self.lock:
+            if q in self.subs.get(screen, []):
+                self.subs[screen].remove(q)
+
+    def count(self, screen):
+        with self.lock:
+            return len(self.subs.get(screen, []))
+
+    def send(self, screen, event, data=None):
+        with self.lock:
+            qs = list(self.subs.get(screen, []))
+        for q in qs:
+            try:
+                q.put_nowait((event, data or {}))
+            except queue.Full:
+                pass
+        return len(qs)
+
+
+# ---- the server
+
+class State:
+    def __init__(self, a):
+        os.makedirs(a.data, exist_ok=True)
+        os.makedirs(os.path.join(a.data, 'store'), exist_ok=True)
+        self.repo = Repo(a.repo, push=a.push)
+        self.house = House(a.house, os.path.join(a.data, 'house-cache.json'), by=a.house_by)
+        self.hub = Hub()
+        self.sdk = os.path.join(a.repo, 'sdk')
+        self.data = a.data
+        self.ask_url = a.ask_url or os.environ.get('PINPIN_ASSISTANT_URL', '')
+        self._assistant = None
+        self.proxy_cache, self.proxy_lock = {}, threading.Lock()
+        try:
+            with open(os.path.join(a.data, 'secrets.json')) as f:
+                self.secrets = json.load(f)  # {"host": {"headers": {...}, "query": {...}}}, never in git
+        except (OSError, ValueError):
+            self.secrets = {}
+
+    @property
+    def assistant(self):
+        """--ask-url, else the first line of <data>/assistant-url (re-read on every call, so it can be switched live)."""
+        if self._assistant is not None:  # set by the tests
+            return self._assistant
+        url = self.ask_url
+        if not url:
+            try:
+                with open(os.path.join(self.data, 'assistant-url')) as f:
+                    url = f.readline().strip()
+            except OSError:
+                url = ''
+        return make_assistant(url)
+
+    @assistant.setter
+    def assistant(self, v):
+        self._assistant = v
+
+    def screens_showing(self, app_id):
+        return [s for s, a in self.house.mapping().items() if a == app_id]
+
+    def reload_app(self, app_id):
+        for s in self.screens_showing(app_id):
+            self.hub.send(str(s), 'reload', {'why': f'{app_id} updated'})
+        self.hub.send('preview:' + app_id, 'reload', {'why': 'updated'})
+
+    def watch_house(self, period=3.0):
+        last = self.house.mapping()
+        while True:
+            try:
+                cur = self.house.mapping(self.house.fetch())
+                for s in set(last) | set(cur):
+                    if last.get(s) != cur.get(s):
+                        log(f'screen {s}: app {last.get(s)} -> {cur.get(s)}')
+                        self.hub.send(str(s), 'reload', {'why': 'app changed'})
+                last = cur
+            except Exception as e:  # house down: keep the cached mapping
+                log('house poll:', e)
+            time.sleep(period)
+
+
+IDLE = """<!doctype html><html><head><meta charset="utf-8"><title>Screen {screen}</title></head>
+<body><main class="pp-center"><div class="pp-huge">Screen {screen}</div>
+<p class="pp-muted">No app here yet. Ask Claude for one, e.g. &ldquo;a recipe app for the kitchen&rdquo;.</p></main></body></html>"""
+
+
+def inject(html, app_id, screen):
+    tag = (f'<base href="/apps/{app_id}/"><meta name="viewport" content="width=device-width,initial-scale=1">'
+           f'<link rel="stylesheet" href="/sdk/pinpin.css">'
+           f'<script src="/sdk/pinpin.js" data-app="{app_id}" data-screen="{screen}"></script>')
+    m = re.search(r'<head[^>]*>', html, re.I)
+    return html[:m.end()] + tag + html[m.end():] if m else tag + html
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.0'
+    st = None  # State
+
+    def log_message(self, fmt, *a):
+        if os.environ.get('PINPIN_APPS_VERBOSE'):
+            log(self.address_string(), fmt % a)
+
+    def send(self, code, obj=None, body=None, ctype='application/json', headers=None):
+        if body is None:
+            body = json.dumps(obj, indent=1).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-store')
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        if self.command != 'HEAD':
+            self.wfile.write(body)
+
+    def json_body(self):
+        n = int(self.headers.get('Content-Length') or 0)
+        if n > MAX_BODY:
+            self.send(413, {'error': 'body too large'}); return None
+        try:
+            d = json.loads(self.rfile.read(n) or b'{}')
+        except ValueError as e:
+            self.send(400, {'error': f'not JSON: {e}'}); return None
+        if not isinstance(d, dict):
+            self.send(400, {'error': 'body must be an object'}); return None
+        return d
+
+    def file(self, path):
+        try:
+            with open(path, 'rb') as f:
+                b = f.read()
+        except OSError:
+            return self.send(404, {'error': 'not found'})
+        self.send(200, body=b, ctype=MIME.get(os.path.splitext(path)[1].lower(), 'application/octet-stream'))
+
+    def page(self, app_id, screen):
+        st = self.st
+        if app_id is None or not os.path.isfile(os.path.join(st.repo.apps, app_id, 'index.html')):
+            html = inject(IDLE.format(screen=screen), '_idle', screen)
+        else:
+            with open(os.path.join(st.repo.apps, app_id, 'index.html'), encoding='utf-8', errors='replace') as f:
+                html = inject(f.read(), app_id, screen)
+        self.send(200, body=html.encode(), ctype=MIME['.html'])
+
+    # -- GET
+    def do_GET(self):
+        st = self.st
+        u = urllib.parse.urlparse(self.path)
+        q = dict(urllib.parse.parse_qsl(u.query))
+        parts = [urllib.parse.unquote(p) for p in u.path.split('/') if p]
+        try:
+            if u.path == '/health':
+                return self.send(200, {'ok': True, 'apps': len(st.repo.ids()), 'commit': st.repo.head(),
+                                       'assistant': st.assistant.name, 'house_rev': (st.house.doc or {}).get('rev')})
+            if u.path == '/':
+                return self.index()
+            if parts[:1] == ['sdk'] and len(parts) == 2 and not manifest.check_path(parts[1]):
+                return self.file(os.path.join(st.sdk, parts[1]))
+            if parts[:1] == ['apps'] and len(parts) >= 3 and manifest.check_id(parts[1]):
+                rel = '/'.join(parts[2:])
+                if manifest.check_path(rel):
+                    return self.send(404, {'error': 'not found'})
+                return self.file(os.path.join(st.repo.apps, parts[1], *parts[2:]))
+            if parts[:1] == ['app'] and len(parts) == 2 and manifest.check_id(parts[1]):
+                if not u.path.endswith('/'):
+                    return self.send(302, {}, headers={'Location': f'/app/{parts[1]}/' + (f'?{u.query}' if u.query else '')})
+                return self.page(parts[1], 'preview:' + parts[1])
+            if parts[:1] == ['screen'] and len(parts) == 2 and parts[1].isdigit():
+                return self.page(st.house.mapping().get(int(parts[1])), parts[1])
+            if u.path == '/events':
+                return self.events(q.get('screen', ''))
+            if u.path == '/proxy':
+                return self.proxy(q.get('app', ''), q.get('url', ''))
+            if parts == ['api', 'apps']:
+                out = []
+                for i in st.repo.ids():
+                    m = st.repo.manifest(i) or {}
+                    out.append({'id': i, 'name': m.get('name'), 'description': m.get('description'), 'size': m.get('size'),
+                                'permissions': m.get('permissions'), 'screens': st.screens_showing(i)})
+                return self.send(200, out)
+            if parts[:2] == ['api', 'apps'] and len(parts) >= 3 and manifest.check_id(parts[2]):
+                a = parts[2]
+                if a not in st.repo.ids():
+                    return self.send(404, {'error': f'no app {a}'})
+                if len(parts) == 3:
+                    files = {p: b.decode('utf-8', 'replace') for p, b in st.repo.files(a).items()
+                             if os.path.splitext(p)[1] in ('.html', '.js', '.css', '.json', '.svg', '.txt', '.md')}
+                    return self.send(200, {'id': a, 'manifest': st.repo.manifest(a), 'files': files,
+                                           'commit': st.repo.head(a), 'screens': st.screens_showing(a)})
+                if parts[3:] == ['history']:
+                    return self.send(200, st.repo.history(a))
+                if parts[3:] == ['data']:
+                    return self.file(os.path.join(st.data, 'store', a + '.json')) if os.path.isfile(
+                        os.path.join(st.data, 'store', a + '.json')) else self.send(200, {})
+            if parts == ['api', 'screens']:
+                return self.send(200, self.screen_list())
+            return self.send(404, {'error': 'not found'})
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def screen_list(self):
+        st = self.st
+        mp, out, seen = st.house.mapping(), [], set()
+        for s in st.house.screens():
+            sid = s.get('id')
+            src = s.get('source') or {}
+            out.append({'screen': sid, 'app': mp.get(sid), 'role': s.get('role'), 'on': s.get('on', 1),
+                        'display': src.get('screen') if src.get('kind') == 'mac-display' else None,
+                        'w_m': s.get('w'), 'h_m': s.get('h'), 'clients': st.hub.count(str(sid))})
+            seen.add(sid)
+        for sid, a in mp.items():  # assigned before the headset placed it
+            if sid not in seen:
+                out.append({'screen': sid, 'app': a, 'role': None, 'on': 0, 'display': sid, 'clients': st.hub.count(str(sid))})
+        return sorted(out, key=lambda r: r['screen'] if isinstance(r['screen'], int) else 0)
+
+    def index(self):
+        st = self.st
+        rows = ''.join(f'<li><a href="/app/{i}/">{i}</a>: {(st.repo.manifest(i) or {}).get("description", "")}</li>'
+                       for i in st.repo.ids())
+        scr = ''.join(f'<li><a href="/screen/{r["screen"]}">screen {r["screen"]}</a>: {r["app"] or "(none)"}</li>'
+                      for r in self.screen_list())
+        html = f'<!doctype html><meta charset="utf-8"><title>PinPin apps</title><h1>Apps</h1><ul>{rows}</ul><h1>Screens</h1><ul>{scr}</ul>'
+        self.send(200, body=html.encode(), ctype=MIME['.html'])
+
+    def events(self, screen):
+        st = self.st
+        if not screen:
+            return self.send(400, {'error': 'screen= required'})
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        q = st.hub.subscribe(screen)
+        try:
+            self.wfile.write(b'retry: 2000\nevent: hello\ndata: {}\n\n'); self.wfile.flush()
+            while True:
+                try:
+                    ev, data = q.get(timeout=15)
+                    self.wfile.write(f'event: {ev}\ndata: {json.dumps(data)}\n\n'.encode())
+                except queue.Empty:
+                    self.wfile.write(b': ping\n\n')
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            st.hub.unsubscribe(screen, q)
+
+    def proxy(self, app_id, url):
+        st = self.st
+        m = st.repo.manifest(app_id) if manifest.check_id(app_id) else None
+        if m is None:
+            return self.send(404, {'error': f'no app {app_id!r}'})
+        p = urllib.parse.urlparse(url)
+        if p.scheme not in ('http', 'https') or not p.hostname:
+            return self.send(400, {'error': 'url must be http(s)'})
+        host = p.hostname + (f':{p.port}' if p.port else '')
+        allowed = (m.get('permissions') or {}).get('fetch', [])
+        if host not in allowed and p.hostname not in allowed:
+            return self.send(403, {'error': f'{host} is not in {app_id} permissions.fetch {allowed}'})
+        sec = st.secrets.get(p.hostname, {})
+        if sec.get('query'):
+            qs = urllib.parse.parse_qsl(p.query) + list(sec['query'].items())
+            url = urllib.parse.urlunparse(p._replace(query=urllib.parse.urlencode(qs)))
+        key = url
+        with st.proxy_lock:
+            hit = st.proxy_cache.get(key)
+        if hit and time.time() - hit[0] < PROXY_TTL:
+            return self.send(hit[1], body=hit[2], ctype=hit[3], headers={'X-Proxy-Cache': 'hit'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'pinpin-apps/1', **sec.get('headers', {})})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                body, code, ctype = r.read(MAX_PROXY + 1), r.status, r.headers.get('Content-Type', 'application/octet-stream')
+        except urllib.error.HTTPError as e:
+            body, code, ctype = e.read(MAX_PROXY + 1), e.code, e.headers.get('Content-Type', 'text/plain')
+        except Exception as e:
+            if hit:  # upstream down: serve the stale copy rather than nothing
+                return self.send(hit[1], body=hit[2], ctype=hit[3], headers={'X-Proxy-Cache': 'stale'})
+            return self.send(502, {'error': f'upstream: {e}'})
+        if len(body) > MAX_PROXY:
+            return self.send(502, {'error': 'upstream response too large'})
+        if code == 200:
+            with st.proxy_lock:
+                if len(st.proxy_cache) > 500:
+                    st.proxy_cache.clear()
+                st.proxy_cache[key] = (time.time(), code, body, ctype)
+        self.send(code, body=body, ctype=ctype, headers={'X-Proxy-Cache': 'miss'})
+
+    # -- writes
+    def do_PUT(self):
+        st = self.st
+        parts = [p for p in urllib.parse.urlparse(self.path).path.split('/') if p]
+        if parts[:2] != ['api', 'apps'] or len(parts) < 3 or not manifest.check_id(parts[2]):
+            return self.send(404, {'error': 'not found'})
+        a = parts[2]
+        if parts[3:] == ['data']:
+            n = int(self.headers.get('Content-Length') or 0)
+            if n > MAX_STORE:
+                return self.send(413, {'error': f'app data over {MAX_STORE} bytes'})
+            raw = self.rfile.read(n)
+            try:
+                json.loads(raw)
+            except ValueError:
+                return self.send(400, {'error': 'not JSON'})
+            if a not in st.repo.ids():
+                return self.send(404, {'error': f'no app {a}'})
+            path = os.path.join(st.data, 'store', a + '.json')
+            with open(path + '.tmp', 'wb') as f:
+                f.write(raw)
+            os.replace(path + '.tmp', path)
+            return self.send(200, {'ok': True})
+        if parts[3:]:
+            return self.send(404, {'error': 'not found'})
+        d = self.json_body()
+        if d is None:
+            return
+        try:
+            problems, commit, changed = st.repo.write(a, d.get('files'), str(d.get('message', ''))[:200],
+                                                     bool(d.get('replace')), str(d.get('by', 'assistant'))[:40])
+        except RuntimeError as e:
+            return self.send(500, {'error': str(e)})
+        if problems:
+            return self.send(400, {'error': 'invalid app', 'problems': problems})
+        if changed:
+            log(f'{a}: commit {commit[:10]}')
+            st.reload_app(a)
+        self.send(200, {'app': a, 'commit': commit, 'changed': changed, 'screens': st.screens_showing(a),
+                        'preview': f'/app/{a}/'})
+
+    def do_DELETE(self):
+        st = self.st
+        parts = [p for p in urllib.parse.urlparse(self.path).path.split('/') if p]
+        if parts[:2] != ['api', 'apps'] or len(parts) != 3 or parts[2] not in st.repo.ids():
+            return self.send(404, {'error': 'not found'})
+        a = parts[2]
+        try:
+            for s in st.screens_showing(a):
+                st.house.assign(s, None)
+                st.hub.send(str(s), 'reload', {'why': f'{a} removed'})
+            commit, _ = st.repo.remove(a, urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get('message', [''])[0])
+        except Exception as e:
+            return self.send(500, {'error': str(e)})
+        self.send(200, {'app': a, 'commit': commit, 'removed': True})
+
+    def do_POST(self):
+        st = self.st
+        parts = [p for p in urllib.parse.urlparse(self.path).path.split('/') if p]
+        d = self.json_body()
+        if d is None:
+            return
+        if parts == ['api', 'ask']:
+            if not (isinstance(d.get('prompt'), str) and d['prompt'].strip()):
+                return self.send(400, {'error': 'prompt required'})
+            m = st.repo.manifest(str(d.get('app', ''))) if manifest.check_id(str(d.get('app', ''))) else None
+            if m is not None and not (m.get('permissions') or {}).get('ask'):
+                return self.send(403, {'error': f'{d["app"]} has no ask permission'})
+            try:
+                return self.send(200, st.assistant.ask({k: d[k] for k in ('app', 'screen', 'prompt', 'system', 'json') if k in d}))
+            except Exception as e:
+                return self.send(502, {'error': f'assistant: {e}', 'stub': True})
+        if parts[:2] == ['api', 'apps'] and len(parts) == 4 and parts[3] == 'rollback' and parts[2] in st.repo.ids():
+            c = str(d.get('commit', ''))
+            if not SHA.match(c):
+                return self.send(400, {'error': 'commit: a git sha'})
+            err, commit, changed = st.repo.rollback(parts[2], c, str(d.get('by', 'assistant'))[:40])
+            if err:
+                return self.send(400, {'error': err})
+            if changed:
+                st.reload_app(parts[2])
+            return self.send(200, {'app': parts[2], 'commit': commit, 'changed': changed})
+        if parts[:2] == ['api', 'screens'] and len(parts) == 4 and parts[2].isdigit():
+            sid, what = int(parts[2]), parts[3]
+            if what == 'app':
+                a = d.get('app')
+                if a is not None and a not in st.repo.ids():
+                    return self.send(400, {'error': f'no app {a!r}', 'apps': st.repo.ids()})
+                try:
+                    rev = st.house.assign(sid, a)
+                except Exception as e:
+                    return self.send(502, {'error': str(e)})
+                st.hub.send(str(sid), 'reload', {'why': 'app changed'})
+                return self.send(200, {'screen': sid, 'app': a, 'house_rev': rev})
+            if what == 'say':
+                t = d.get('text')
+                if not (isinstance(t, str) and t.strip()):
+                    return self.send(400, {'error': 'text required'})
+                n = st.hub.send(str(sid), 'voice', {'text': t.strip()[:2000], 'final': d.get('final', True)})
+                return self.send(200 if n else 404, {'screen': sid, 'delivered': n, 'app': st.house.mapping().get(sid)})
+            if what == 'reload':
+                return self.send(200, {'screen': sid, 'delivered': st.hub.send(str(sid), 'reload', {'why': 'asked'})})
+        return self.send(404, {'error': 'not found'})
+
+
+def main_args(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument('--repo', default=os.path.expanduser('~/pinpin-apps'))
+    ap.add_argument('--data', default=os.path.expanduser('~/pinpin-apps-data'))
+    ap.add_argument('--house', default='http://127.0.0.1:57800')
+    ap.add_argument('--house-by', default='apps')
+    ap.add_argument('--ask-url', default='', help="the assistant's /api/ask (work-42); empty: the stub")
+    ap.add_argument('--bind', default='0.0.0.0')
+    ap.add_argument('--port', type=int, default=57830)
+    ap.add_argument('--push', action='store_true', help='git push after every commit')
+    ap.add_argument('--poll', type=float, default=3.0)
+    return ap.parse_args(argv)
+
+
+def serve(a):
+    """The server (not started) and its state; the house watcher runs from here on."""
+    st = State(a)
+    try:
+        st.house.fetch()
+    except Exception as e:
+        log('house not reachable at start, using the cached copy:', e)
+    handler = type('H', (Handler,), {'st': st})
+    srv = ThreadingHTTPServer((a.bind, a.port), handler)
+    srv.daemon_threads = True
+    threading.Thread(target=st.watch_house, args=(a.poll,), daemon=True).start()
+    return srv, st
+
+
+def main():
+    a = main_args()
+    srv, st = serve(a)
+    log(f'pinpin-apps on {a.bind}:{srv.server_address[1]}, repo {a.repo}, {len(st.repo.ids())} apps, assistant {st.assistant.name}')
+    srv.serve_forever()
+
+
+if __name__ == '__main__':
+    main()

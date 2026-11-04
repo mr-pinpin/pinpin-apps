@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kitchen recipes</title>
+<script src="catalogue.js"></script>
+<style>
+  #have { min-height: 1.4rem; font-size: 0.85rem; }
+  #list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; align-content: start; }
+  .rc { display: flex; flex-direction: column; gap: 0.15rem; }
+  .rc .n { color: var(--pp-accent); font-size: 1.3rem; font-weight: 800; line-height: 1; }
+  .rc .ti { font-size: 0.95rem; font-weight: 800; line-height: 1.1; height: 2.2em; overflow: hidden; }
+  .rc .mi { font-size: 0.6rem; color: var(--pp-muted); }
+  .rc .uses { font-size: 0.6rem; color: var(--pp-good); }
+  .rc .miss { font-size: 0.6rem; color: var(--pp-bad); }
+  #recipe { display: none; flex-direction: column; gap: 0.4rem; }
+  #recipe.on { display: flex; }
+  #step { font-size: 1.45rem; line-height: 1.2; font-weight: 700; }
+  #stepn { color: var(--pp-accent); }
+  #dots { display: flex; gap: 0.2rem; } #dots i { width: 0.35rem; height: 0.35rem; border-radius: 50%; background: var(--pp-line); }
+  #dots i.on { background: var(--pp-accent); }
+  .empty { font-size: 1rem; color: var(--pp-muted); }
+  footer { display: flex; justify-content: space-between; align-items: baseline; }
+  #src { font-size: 0.5rem; color: var(--pp-muted); }
+</style>
+</head>
+<body>
+<header class="pp-row"><h1 id="title">What can I cook?</h1><div class="pp-grow"></div><div id="busy" class="pp-accent pp-small"></div></header>
+<div id="have"></div>
+<main id="main" class="pp-grow">
+  <section id="list"></section>
+  <section id="recipe">
+    <div class="pp-row"><h2 id="rtitle" class="pp-grow pp-clip"></h2><div id="rmin" class="pp-muted pp-small"></div></div>
+    <div id="dots"></div>
+    <div id="step" class="pp-grow"></div>
+    <div id="ruses" class="pp-small pp-muted"></div>
+  </section>
+</main>
+<footer><div class="pp-hint" id="hint"></div><div id="src"></div></footer>
+<script>
+const $ = (id) => document.getElementById(id), E = (s) => pinpin.escape(s);
+const SYN = { beetroot: 'beet', beets: 'beet', spaghetti: 'pasta', macaroni: 'pasta', penne: 'pasta', noodle: 'pasta', fusilli: 'pasta',
+  'chicken breast': 'chicken', 'chicken thigh': 'chicken', 'bell pepper': 'pepper', capsicum: 'pepper', courgette: 'zucchini',
+  scallion: 'onion', 'green onion': 'onion', 'spring onion': 'onion', shallot: 'onion', tvorog: 'cottage cheese', quark: 'cottage cheese',
+  mince: 'beef', 'ground beef': 'beef', 'minced meat': 'beef', oatmeal: 'oat', 'rolled oat': 'oat', spud: 'potato', 'cherry tomato': 'tomato',
+  champignon: 'mushroom', 'kidney bean': 'bean', chickpea: 'chickpea', yogurt: 'yoghurt', aubergine: 'eggplant' };
+const NUM = /^(a|an|the|some|few|a few|couple of|one|two|three|four|five|six|seven|eight|nine|ten|dozen|half|\d+(\.\d+)?)\s+/;
+const UNIT = /^(kg|g|grams?|kilos?|cups?|cans?|tins?|pieces?|slices?|cloves?|bunch(es)?|packs?|packets?|bags?|bottles?|liters?|litres?|ml|lbs?|pounds?|of)\s+/;
+
+function single(w) {
+  if (/ies$/.test(w)) return w.slice(0, -3) + 'y';
+  if (/(o|x|ch|sh|ss)es$/.test(w)) return w.slice(0, -2);
+  if (/[^s]s$/.test(w) && !/(ous|is|us)$/.test(w)) return w.slice(0, -1);
+  return w;
+}
+function norm(s) {
+  s = s.toLowerCase().replace(/[^a-z\s-]/g, ' ').replace(/\s+/g, ' ').trim();
+  for (let k = 0; k < 4; k++) s = s.replace(NUM, '').replace(UNIT, '');
+  if (!s || /^(and|or|with|also|too|please|thanks?)$/.test(s)) return '';
+  const words = s.split(' '); words[words.length - 1] = single(words[words.length - 1]);
+  s = words.join(' ');
+  return SYN[s] || s;
+}
+function split(text) {
+  return text.replace(/^\s*(ok(ay)?|so|well|um+|uh+)[, ]+/i, '')
+    .replace(/^\s*(i|we)\s+(have|got|'ve got|have got)\s+/i, '').replace(/^\s*(add|plus|there is|there are|also)\s+/i, '')
+    .split(/\s*(?:,|;|\band\b|\bwith\b|\bplus\b|\balso\b|\.)\s*/i).map(norm).filter(Boolean);
+}
+
+let S = { have: [], recipes: [], source: '', view: 'list', pick: 0, step: 0 };
+let askTimer = null, asking = 0;
+
+function save() { pinpin.store.set('state', S); }
+
+function render() {
+  $('have').innerHTML = S.have.length ? S.have.map((h) => `<span class="pp-chip pp-on">${E(h)}</span>`).join('')
+    : '<span class="pp-muted">Tell me what you have: “eggs, tomatoes and an onion”</span>';
+  const list = $('list'), rec = $('recipe');
+  if (S.view === 'recipe' && S.recipes[S.pick]) {
+    list.style.display = 'none'; rec.classList.add('on');
+    const r = S.recipes[S.pick], n = r.steps.length;
+    $('title').textContent = (S.pick + 1) + '. ' + r.title;
+    $('rtitle').textContent = 'Step ' + (S.step + 1) + ' of ' + n;
+    $('rmin').textContent = r.minutes ? r.minutes + ' min' : '';
+    $('dots').innerHTML = r.steps.map((_, i) => `<i class="${i <= S.step ? 'on' : ''}"></i>`).join('');
+    $('step').textContent = r.steps[S.step] || '';
+    $('ruses').innerHTML = (r.uses || []).map(E).join(' · ') + (r.missing && r.missing.length ? ` <span style="color:var(--pp-bad)">· need ${r.missing.map(E).join(', ')}</span>` : '');
+    pinpin.fit($('step'), { max: 1, min: 0.55 });
+    $('hint').innerHTML = 'Say <b>next</b> · <b>back</b> · <b>list</b>';
+  } else {
+    S.view = 'list'; list.style.display = ''; rec.classList.remove('on');
+    $('title').textContent = 'What can I cook?';
+    list.innerHTML = S.recipes.length ? S.recipes.map((r, i) => `<div class="pp-card rc"><div class="n">${i + 1}</div><div class="ti">${E(r.title)}</div>` +
+      `<div class="mi">${r.minutes ? r.minutes + ' min · ' : ''}${r.steps.length} steps</div>` +
+      `<div class="uses">${(r.uses || []).map(E).join(', ')}</div>` +
+      `<div class="miss">${r.missing && r.missing.length ? 'need ' + r.missing.map(E).join(', ') : ''}</div></div>`).join('')
+      : `<div class="empty">${S.have.length ? 'No ideas yet…' : ''}</div>`;
+    $('hint').innerHTML = S.recipes.length ? 'Say <b>recipe 2</b> · <b>more</b> · <b>remove eggs</b> · <b>clear</b>' : 'Say your ingredients';
+  }
+  $('src').textContent = S.source;
+  $('busy').textContent = asking ? 'thinking…' : '';
+}
+
+function fromCatalogue(have, exclude, n) {
+  const H = new Set(have);
+  const scored = window.CATALOGUE.filter((r) => !exclude.includes(r.title)).map((r) => {
+    const uses = r.needs.filter((x) => H.has(x)), extra = r.extra.filter((x) => H.has(x)), missing = r.needs.filter((x) => !H.has(x));
+    return { r, uses: uses.concat(extra), missing, score: uses.length * 2 + extra.length - missing.length * 1.5 };
+  }).filter((x) => x.uses.length && x.missing.length <= 2).sort((a, b) => b.score - a.score);
+  return scored.slice(0, n).map((x) => ({ title: x.r.title, minutes: x.r.minutes, uses: x.uses, missing: x.missing, steps: x.r.steps }));
+}
+
+async function suggest(more) {
+  if (!S.have.length) { S.recipes = []; render(); return; }
+  const n = pinpin.config.suggestions || 3, exclude = more ? S.recipes.map((r) => r.title) : [];
+  const ticket = ++asking; render();
+  let out = null, source = '';
+  const r = await pinpin.ask(
+    `Ingredients I have: ${S.have.join(', ')}.` + (exclude.length ? ` Not these again: ${exclude.join('; ')}.` : '') +
+    ` Suggest ${n} recipes I can cook now (pantry staples like salt, oil, pepper, water are fine).` +
+    (pinpin.config.diet ? ` Diet: ${pinpin.config.diet}.` : ''),
+    { json: true, system: 'You run a recipe app on a small screen above the kitchen oven, read from 1-2 m away. Reply with JSON only: ' +
+      '{"recipes":[{"title":"short name","minutes":20,"uses":["ingredients from my list"],"missing":["at most 2 non-staples I lack"],"steps":["3 to 7 short imperative steps, at most 14 words each"]}]}' });
+  if (ticket !== asking) return;  // a newer request superseded this one
+  const js = r.json && Array.isArray(r.json.recipes) ? r.json.recipes : null;
+  if (js && js.length) {
+    out = js.filter((x) => x && x.title && Array.isArray(x.steps) && x.steps.length).slice(0, n)
+      .map((x) => ({ title: String(x.title), minutes: +x.minutes || 0, uses: (x.uses || []).map(String), missing: (x.missing || []).map(String), steps: x.steps.map(String) }));
+    source = 'ideas: Claude';
+  }
+  if (!out || !out.length) { out = fromCatalogue(S.have, exclude, n); source = 'ideas: built-in list' + (r.stub ? '' : ' (Claude did not answer)'); }
+  asking = 0;
+  if (more && !out.length) { pinpin.toast('No more ideas with these'); render(); return; }
+  S.recipes = out; S.source = source; S.view = 'list'; S.pick = 0; S.step = 0; save(); render();
+}
+function suggestSoon() { clearTimeout(askTimer); askTimer = setTimeout(() => suggest(false), 1200); }
+
+const ORD = { first: 1, one: 1, second: 2, two: 2, third: 3, three: 3, fourth: 4, four: 4, fifth: 5, five: 5, last: -1 };
+function open(k) {
+  if (k === -1) k = S.recipes.length;
+  if (!S.recipes[k - 1]) return pinpin.toast('There is no recipe ' + k);
+  S.view = 'recipe'; S.pick = k - 1; S.step = 0; save(); render();
+}
+
+function onVoice(text) {
+  const t = text.toLowerCase().replace(/[.!?]+$/g, '').trim();
+  let m;
+  if (/^(clear|start over|reset|new list|empty( the list)?|clear (all|everything|the list))$/.test(t)) { S = { ...S, have: [], recipes: [], view: 'list', source: '' }; save(); return render(); }
+  if ((m = t.match(/^(?:show |open |make |cook |read )?(?:recipe |number |the )?(\d|first|second|third|fourth|fifth|one|two|three|four|five|last)(?: one| recipe)?$/))) return open(/\d/.test(m[1]) ? +m[1] : ORD[m[1]]);
+  if (S.view === 'recipe') {
+    const r = S.recipes[S.pick];
+    if (/^(next|next step|continue|go on|done|ok(ay)?|and then)$/.test(t)) { if (S.step < r.steps.length - 1) S.step++; else pinpin.toast('That was the last step. Enjoy!'); save(); return render(); }
+    if (/^(back|previous|previous step|go back)$/.test(t)) { if (S.step > 0) S.step--; else S.view = 'list'; save(); return render(); }
+    if ((m = t.match(/^(?:go to )?step (\d+)$/))) { S.step = Math.min(Math.max(+m[1] - 1, 0), r.steps.length - 1); save(); return render(); }
+    if (/^(repeat|again|what)$/.test(t)) return pinpin.toast(r.steps[S.step], 5000);
+    if (/^(list|close|recipes|suggestions|other recipes|back to (the )?list)$/.test(t)) { S.view = 'list'; save(); return render(); }
+  }
+  if (/^(more|other ideas|something else|more ideas|next|different ones)$/.test(t)) return suggest(true);
+  if ((m = t.match(/^(?:remove|delete|without|no|no more|i (?:don't|do not) have|out of)\s+(.+)$/))) {
+    const gone = split(m[1]); S.have = S.have.filter((h) => !gone.includes(h)); save(); render(); return suggestSoon();
+  }
+  const add = split(text).filter((x) => x.length > 1 && x.split(' ').length <= 3);
+  if (!add.length) return pinpin.toast('Say ingredients, or “recipe 2”');
+  for (const a of add) if (!S.have.includes(a)) S.have.push(a);
+  save(); render(); suggestSoon();
+}
+
+pinpin.onVoice(onVoice);
+pinpin.ready.then(() => { S = Object.assign(S, pinpin.store.get('state', {})); render(); });
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+{
+ "id": "recipes",
+ "name": "Kitchen recipes",
+ "description": "Say the ingredients you have; it suggests recipes (Claude through the assistant, or a built-in list offline) and reads one step at a time.",
+ "version": 1,
+ "size": {"aspect": "16:10", "min_px": [800, 500], "preferred_px": [1920, 1200], "distance_m": 1.5},
+ "permissions": {"fetch": [], "voice": true, "ask": true, "storage": true},
+ "config": {"suggestions": 3, "diet": "", "language": "en"}
+}
