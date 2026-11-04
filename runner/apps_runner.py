@@ -361,6 +361,7 @@ class Runner:
     def __init__(self, a):
         self.a, self.procs = a, {}  # screen -> (Popen, target, seq, box)
         self.display_box = {}       # screen -> (x, y, w, h) of its whole virtual display, for input u/v
+        self.bounds, self.main_id, self.bounds_key, self.bounds_at = {}, 0, '', 0.0
         self.backoff = {}           # screen -> (next try time, delay)
 
     def step(self):
@@ -371,8 +372,19 @@ class Runner:
         except Exception as e:
             log('not syncing:', e)  # keep what runs; a Mini blip must not blank the screens
             return
+        # idle-cheap: ask macOS for display bounds (an osascript run) only when some screen needs a window, and only
+        # when the display list changed or the last answer is 30 s old
+        needed = [x for x in screens if (x.get('app') or x.get('url')) and x.get('display') is not None]
         dids = {d['display'] for d in displays}
-        bounds, main_id = display_bounds(dids) if dids else ({}, 0)
+        key = json.dumps(sorted((d['screen'], d['display'], d.get('w'), d.get('h')) for d in displays))
+        if not needed:
+            bounds, main_id = {}, 0
+        elif key != self.bounds_key or time.time() - self.bounds_at > 30:
+            self.bounds, self.main_id = display_bounds(dids) if dids else ({}, 0)
+            self.bounds_key, self.bounds_at = key, time.time()
+            bounds, main_id = self.bounds, self.main_id
+        else:
+            bounds, main_id = self.bounds, self.main_id
         want = plan(screens, displays, bounds, main_id)
         self.display_box = {s: (b[0], b[1] - MENU_BAR, b[2], b[3] + MENU_BAR) for s, (_, _, b) in want.items()}
         for s in list(self.procs):
@@ -441,7 +453,7 @@ def main():
     ap.add_argument('--mini', default=os.environ.get('PINPIN_APPS', 'http://192.168.0.50:57830'))
     ap.add_argument('--displays', default='http://127.0.0.1:57710')
     ap.add_argument('--mode', choices=['app', 'kiosk'], default='app')
-    ap.add_argument('--period', type=float, default=3.0)
+    ap.add_argument('--period', type=float, default=3.0, help='seconds between checks (at least 1)')
     ap.add_argument('--once', action='store_true')
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--input-port', type=int, default=57735, help='LAN port for CDP input (the Mini forwards to it); 0: off')
@@ -456,7 +468,7 @@ def main():
         r.step()
         if a.once:
             break
-        time.sleep(a.period)
+        time.sleep(max(1.0, a.period))
 
 
 if __name__ == '__main__':
