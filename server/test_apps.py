@@ -44,11 +44,17 @@ def house_doc():
 class FakeHouse(BaseHTTPRequestHandler):
     """Only what the apps server uses: GET /house, PUT /house with If-Match (409 when stale)."""
     doc = None
+    headset = None  # GET /headset/status: 404 until set (the headset's first post)
     lock = threading.Lock()
 
     def log_message(self, *a): pass
 
     def do_GET(self):
+        if self.path == '/headset/status':
+            if self.headset is None:
+                self.send_response(404); self.send_header('Content-Length', '0'); self.end_headers(); return
+            b = json.dumps(self.headset).encode()
+            self.send_response(200); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b); return
         b = json.dumps(self.doc).encode()
         self.send_response(200); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
 
@@ -650,6 +656,17 @@ class Apps(unittest.TestCase):
         self.assertEqual(st, 200)
         self.assertEqual([(x['component'], x['ok']) for x in self.req('GET', '/api/status')[1]['checks']], [('assistant-eval', True)])
         self.assertEqual(self.req('POST', '/api/status/component', {'component': '../x', 'text': 'x'})[0], 400)
+        # the headset's own feed, relayed from the house server (a stand-in here, whichever house the suite runs on)
+        fh = ThreadingHTTPServer(('127.0.0.1', 0), FakeHouse); bg(fh)
+        real, self.st.house.url = self.st.house.url, f'http://127.0.0.1:{fh.server_address[1]}'
+        try:
+            FakeHouse.headset = None  # 404: not posted yet
+            self.assertEqual(self.req('GET', '/api/status')[1]['headset_feed'], {'missing': True, 'error': None})
+            FakeHouse.headset = {'v': 76, 'seq': 3, 'state': 'running', 'ageS': 4, 'battery': {'pct': 80, 'charging': False}}
+            self.assertEqual(self.req('GET', '/api/status')[1]['headset_feed']['v'], 76)
+        finally:
+            FakeHouse.headset, self.st.house.url = None, real
+            fh.shutdown(); fh.server_close()
         # the floor plan is relayed from the house server (the stand-in has none: an error, not a crash)
         self.assertIn(self.req('GET', '/house-plan.svg')[0], (200, 404, 502))
 

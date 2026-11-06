@@ -1249,7 +1249,7 @@ class Handler(BaseHTTPRequestHandler):
                         checks.append(json.load(f))
                 except (OSError, ValueError):
                     pass
-        return {'now': now(), 'vps': vps, 'headset': st.headset.last, 'screens': self.screen_list(), 'apps': names, 'cursor': cursor,
+        return {'now': now(), 'vps': vps, 'headset': st.headset.last, 'headset_feed': self.headset_feed(), 'screens': self.screen_list(), 'apps': names, 'cursor': cursor,
                 'checks': checks, 'kanban': st.kanban.summary(),
                 'network': {'air_ip': st.air_ip or None, 'air_seen_s': round(time.time() - st.air_seen) if st.air_seen else None,
                             'mini_tailscale': st.tailscale(), 'headset_ssid': (st.headset.last or {}).get('ssid'),
@@ -1309,6 +1309,18 @@ class Handler(BaseHTTPRequestHandler):
             return {'up': False, 'error': 'not running yet' if refused else str(e.reason)[:120]}
         except Exception as e:
             return {'up': False, 'error': f'{type(e).__name__}: {e}'[:120]}
+
+    def headset_feed(self):
+        """The headset's own status posts (room_lab v0.76+, work-c4): the house server's GET /headset/status, or why not.
+        404 until the headset's first post; ageS > 30 means it stopped reporting."""
+        try:
+            with urllib.request.urlopen(self.st.house.url + '/headset/status', timeout=2) as r:
+                d = json.loads(r.read() or b'{}')
+            return d if isinstance(d, dict) else None
+        except urllib.error.HTTPError as e:
+            return {'missing': e.code == 404, 'error': None if e.code == 404 else f'HTTP {e.code}'}
+        except Exception as e:
+            return {'error': f'{type(e).__name__}: {e}'[:120]}
 
     def network_expect(self):
         """<data>/network.json overrides: {"air_ssid": ..., "headset_ssid": [...]}."""

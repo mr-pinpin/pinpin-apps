@@ -59,7 +59,8 @@
 <div class="card" id="checks"><div class="sub">No checks reported yet.</div></div>
 
 <h2>Headset</h2>
-<div class="card"><div class="grid" id="headset"></div><div class="sub" id="hsx" style="margin-top:8px"></div></div>
+<div class="card"><div class="grid" id="headset"></div><div class="sub" id="hsx" style="margin-top:8px"></div>
+<div id="hfeed" style="margin-top:10px"></div></div>
 
 <h2>Screens and apps</h2>
 <div class="card" id="screens"></div>
@@ -123,6 +124,30 @@ function headset(h) {
   $('hsx').innerHTML = (h.flags_on && h.flags_on.length ? 'Flags on: ' + h.flags_on.map(esc).join(', ') + '. ' : '') +
     (h.errors && h.errors.length ? '<span class="bad">Errors: ' + h.errors.map((e) => esc(JSON.stringify(e))).join('; ') + '</span> ' : '') +
     'Checked ' + since(h.checked) + '.' + (st === 'standby' ? ' Standby: the numbers are from when it was last awake.' : '');
+}
+
+// the headset's own posts (house server /headset/status): live while ageS <= 30
+function headsetFeed(f) {
+  const el = $('hfeed');
+  if (!f || f.missing) { el.innerHTML = '<div class="sub">Live feed: the headset has not posted yet (room_lab v0.76 or later posts it).</div>'; return; }
+  if (f.error) { el.innerHTML = '<div class="sub">Live feed: <span class="bad">' + esc(f.error) + '</span></div>'; return; }
+  const live = f.ageS != null && f.ageS <= 30;
+  const stat = (k, v, c) => `<div class="stat"><div class="k">${k}</div><div class="v ${c || ''}">${esc(v ?? '–')}</div></div>`;
+  const b = f.battery || {}, h = f.house || {}, rc = f.reception || {};
+  const scr = f.screens || [];
+  let html = '<div class="sub">Live feed ' + (live ? '<span class="good">reporting</span>' : '<span class="bad">not reporting</span>') +
+    ' · last post ' + (f.ageS != null ? ago(f.ageS) + ' ago' : '?') + (f.from ? ' from ' + esc(f.from) : '') + (f.seq != null ? ' · #' + esc(f.seq) : '') + '</div>';
+  html += '<div class="grid" style="margin-top:6px">' + stat('state', f.state, live ? '' : 'stale') + stat('version', f.v != null ? 'v' + f.v : null) +
+    stat('fps', f.fps) + stat('battery', b.pct != null ? b.pct + '%' + (b.charging ? ' ⚡' : '') : null, b.pct != null && b.pct < 25 ? 'bad' : '') +
+    stat('house', h.on === false ? 'off' : h.rev != null ? 'rev ' + h.rev + (h.pending ? ' · pending ' + h.pending : '') : null, h.error ? 'bad' : '') +
+    stat('screens on', scr.length ? scr.filter((s) => s.on).length + ' / ' + scr.length : null) +
+    stat('room', f.roomOk == null ? null : f.roomOk ? 'ok' : 'not ok', f.roomOk === false ? 'bad' : '') +
+    stat('reception', rc.open == null ? null : (rc.open ? 'open' : 'closed') + (rc.sent != null ? ' · ' + rc.sent + ' sent' : '')) + '</div>';
+  if (scr.length) html += '<div class="sub" style="margin-top:6px">' + scr.map((s) => `${esc(s.id)}${s.on ? '' : ' (off)'}: ${esc(s.wall || '?')} · ${esc(s.source || '')}${s.stage ? ' · ' + esc(s.stage) : ''}`).join('<br>') + '</div>';
+  if (h.error) html += '<div class="sub bad">House: ' + esc(h.error) + '</div>';
+  if (f.errors && f.errors.length) html += '<div class="sub"><span class="bad">Errors:</span> ' + f.errors.map((e) => esc(typeof e === 'string' ? e : JSON.stringify(e))).join('; ') + '</div>';
+  if (f.events && f.events.length) html += '<div class="sub">Events: ' + f.events.map((e) => esc(typeof e === 'string' ? e : JSON.stringify(e))).join('; ') + '</div>';
+  el.innerHTML = html;
 }
 
 function screens(list, apps) {
@@ -220,6 +245,7 @@ async function load() {
   $('meta').innerHTML = `${new Date().toLocaleString([], { weekday: 'long', hour: '2-digit', minute: '2-digit' })} · ` +
     (v ? `agents' data ${v.age_s > 900 ? '<span class="stale">' + ago(v.age_s) + ' old</span>' : ago(v.age_s) + ' old'} · headset owner: ${esc((v.owner || '').split('\n')[0])}` : '<span class="stale">no data from the agents yet</span>');
   headset(d.headset || {});
+  headsetFeed(d.headset_feed);
   if ((d.checks || []).length) $('checks').innerHTML = d.checks.map((c) => `<div class="scr"><div><b>${esc(c.component)}</b>
     <div class="sub">${since(c.at)}${c.link ? ' · ' + esc(c.link) : ''}</div></div>
     <div class="${c.ok === true ? 'good' : c.ok === false ? 'bad' : ''}" style="text-align:right">${c.ok === true ? '✓ ' : c.ok === false ? '✗ ' : ''}${esc(c.text)}</div></div>`).join('');
