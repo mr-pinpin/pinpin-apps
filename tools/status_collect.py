@@ -121,11 +121,20 @@ echo "cs={\"cpu\": $(echo "$c0 $c1 $t0 $t1" | awk '{printf "%.0f", ($2-$1)*100/(
 """
 
 
+AIR_FREEZE = '/root/work/.air-freeze'  # exists: nothing of ours touches the laptop (touch it with a reason, rm to lift)
+
+
 def air_network():
     """The laptop's Wi-Fi network, Tailscale and colorsync load (K24: CPU % of a core and display-info requests per
     minute, over 10 s), read over ssh (Tailscale): read-only, about 15 s. Unreachable is
     itself the signal (Tailscale off, or the laptop asleep)."""
     out = {'checked': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
+    if os.path.exists(AIR_FREEZE):  # the coordinator froze the laptop (a demo): not even this read-only sample
+        try:
+            why = open(AIR_FREEZE).read().strip()[:160]
+        except OSError:
+            why = ''
+        return dict(out, frozen=True, error='laptop frozen' + (': ' + why if why else ''))
     try:
         p = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', 'pinpin-air', 'bash -s'], input=AIR_NET,
                            capture_output=True, text=True, timeout=40)

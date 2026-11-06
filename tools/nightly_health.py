@@ -157,7 +157,9 @@ def check_network():
     n = s.get('network', {}) if isinstance(s, dict) else {}
     ex = n.get('expect') or {'air_ssid': ['RT-5WiFi-EDA0'], 'headset_ssid': []}
     probs, facts = [], []
-    if not a.get('reachable'):
+    if a.get('frozen'):
+        facts.append(a['error'] + ' (laptop checks skipped)')
+    elif not a.get('reachable'):
         probs.append(f'laptop not reachable over Tailscale ({a.get("error", "")[:60]})')
     else:
         facts.append(f'laptop {a.get("ip")} on {a.get("ssid")}')
