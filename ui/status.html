@@ -196,7 +196,7 @@ function activity(lines) {
   }).join('\n');
 }
 
-function network(n, a) {  // n: the Mini's view (/api/status), a: the laptop read over ssh by the VPS (vps.air_network)
+function network(n, a, st) {  // n: the Mini's view (/api/status), a: the laptop read over ssh by the VPS (vps.air_network)
   n = n || {}; const ex = n.expect || { air_ssid: ['RT-5WiFi-EDA0'], headset_ssid: [] };
   const row = (k, v, cls, note) => `<div class="scr"><div><b>${k}</b>${note ? `<div class="sub">${note}</div>` : ''}</div><div class="${cls || ''}" style="text-align:right">${v}</div></div>`;
   const ok = (b) => (b ? 'good' : 'bad'), mark = (b) => (b ? '✓ ' : '✗ ');
@@ -225,6 +225,10 @@ function network(n, a) {  // n: the Mini's view (/api/status), a: the laptop rea
   const tl = n.screen_tools;
   if (tl) h += row('Mini screen tools', tl.up ? '✓ up' + (tl.health && tl.health.display ? ' · display ' + esc(tl.health.display) : '') : esc(tl.error || 'down'),
     tl.up ? 'good' : tl.error === 'not running yet' ? '' : 'bad', 'the Claude button on the MINI screen (work-42, K20, :57860)');
+  for (const p of (st && st.peers) || []) if (p.peer !== 'localhost') h += row('VPS → ' + esc(p.peer) + ' stalls',
+    `${p.last_hour ? '✗ ' : ''}${p.last_hour} last hour · ${p.day} in 24 h`, p.last_hour > 5 ? 'bad' : p.last_hour ? 'warn' : '',
+    'TCP opens unanswered while the peer was online (a live path stalling, not a lost one)' + (p.last ? ' · last ' + since(p.last) : ''));
+  if (st && st.peers && !st.peers.length) h += row('VPS → home stalls', '✓ none in 24 h', 'good');
   $('network').innerHTML = h + (a && a.checked ? `<div class="sub" style="margin-top:6px">Laptop read ${since(a.checked)}.</div>` : '');
 }
 
@@ -251,7 +255,7 @@ async function load() {
     <div class="${c.ok === true ? 'good' : c.ok === false ? 'bad' : ''}" style="text-align:right">${c.ok === true ? '✓ ' : c.ok === false ? '✗ ' : ''}${esc(c.text)}</div></div>`).join('');
   screens(d.screens || [], d.apps || {});
   kanban(d.kanban);
-  network(d.network, v && v.air_network);
+  network(d.network, v && v.air_network, v && v.tailnet_stalls);
   if (v) {
     const secs = sections(v.roadmap || '');
     const morning = secs.find((s) => /morning list/i.test(s.title));

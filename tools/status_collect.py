@@ -160,6 +160,50 @@ def air_network():
     return out
 
 
+STALL = re.compile(r'^(\S+) \S+ tailscaled\[\d+\]: open-conn-track: timeout opening \((\w+) [\d.]+:\d+ => ([\d.]+):(\d+)\) '
+                   r'to node \[(\w+)\]; online=(\w+), lastRecv=(\S+)')
+
+
+def parse_stalls(journal, names=None, now=None):
+    """Per peer, the VPS's TCP opens that got no answer while the peer was online (WireGuard alive, packets received
+    seconds before): stalls inside a live path, not a lost path (2026-11-07, VPS -> Mini). journal: journalctl -o
+    short-iso lines; names: tailscale IP -> host name. Counts over the last hour and the last 24 h, the last one."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    names = names or {}
+    out = {}
+    for line in journal.splitlines():
+        m = STALL.match(line)
+        if not m or m.group(6) != 'yes':
+            continue
+        try:
+            t = datetime.datetime.fromisoformat(m.group(1)).astimezone(datetime.timezone.utc)
+        except ValueError:
+            continue
+        age = (now - t).total_seconds()
+        if age > 86400:
+            continue
+        ip = m.group(3)
+        p = out.setdefault(ip, {'peer': names.get(ip, ip), 'ip': ip, 'last_hour': 0, 'day': 0, 'last': None, 'ports': {}})
+        p['day'] += 1
+        p['last_hour'] += age <= 3600
+        p['ports'][m.group(4)] = p['ports'].get(m.group(4), 0) + 1
+        p['last'] = max(p['last'] or '', t.strftime('%Y-%m-%dT%H:%M:%SZ'))
+    return sorted(out.values(), key=lambda p: -p['day'])
+
+
+def tailnet_stalls():
+    """parse_stalls over the VPS's own tailscaled journal (read-only; the collector runs as root from cron)."""
+    out = {'checked': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
+    try:
+        j = subprocess.run(['journalctl', '-u', 'tailscaled', '--since', '-24h', '--no-pager', '-o', 'short-iso',
+                            '--grep', 'timeout opening'], capture_output=True, text=True, timeout=30).stdout
+        st = json.loads(subprocess.run(['tailscale', 'status', '--json'], capture_output=True, text=True, timeout=10).stdout or '{}')
+    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+        return dict(out, error=str(e)[:160])
+    names = {ip: p.get('HostName') for p in (st.get('Peer') or {}).values() for ip in (p.get('TailscaleIPs') or [])}
+    return dict(out, peers=parse_stalls(j, names))
+
+
 def main():
     docs = fresh_docs()
     activity = read(os.path.join(QWS, 'bench/activity.log')).splitlines()
@@ -177,6 +221,7 @@ def main():
         'qws_head': head,
         'flags': flags(),
         'air_network': air_network(),
+        'tailnet_stalls': tailnet_stalls(),
     }
     json.dump(doc, sys.stdout, ensure_ascii=False)
 
